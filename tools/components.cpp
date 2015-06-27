@@ -62,6 +62,7 @@ struct TarjanEdgeData
     TarjanEdgeData(unsigned distance, unsigned name_id) : distance(distance), name_id(name_id) {}
     unsigned distance;
     unsigned name_id;
+    bool HasForwardDir() const { return true; }
 };
 
 using TarjanGraph = StaticGraph<TarjanEdgeData>;

@@ -146,6 +146,8 @@ template <typename EdgeDataT> class DynamicGraph
 
     NodeIterator GetTarget(const EdgeIterator e) const { return NodeIterator(edge_list[e].target); }
 
+    bool HasForwardDir(const EdgeIterator e) const { return edge_list[e].data.HasForwardDir(); }
+
     void SetTarget(const EdgeIterator e, const NodeIterator n) { edge_list[e].target = n; }
 
     EdgeDataT &GetEdgeData(const EdgeIterator e) { return edge_list[e].data; }

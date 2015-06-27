@@ -139,6 +139,8 @@ template <typename EdgeDataT, bool UseSharedMemory = false> class StaticGraph
         return NodeIterator(edge_array[e].target);
     }
 
+    bool HasForwardDir(const EdgeIterator e) const { return edge_array[e].data.HasForwardDir(); }
+
     EdgeDataT &GetEdgeData(const EdgeIterator e) { return edge_array[e].data; }
 
     const EdgeDataT &GetEdgeData(const EdgeIterator e) const { return edge_array[e].data; }

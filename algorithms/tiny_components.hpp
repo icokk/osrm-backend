@@ -145,6 +145,9 @@ template <typename GraphT> class TarjanSCC
 
                     for (const auto current_edge : m_node_based_graph->GetAdjacentEdgeRange(v))
                     {
+                        if ( !m_node_based_graph->HasForwardDir(current_edge) )
+                            continue;
+
                         const auto vprime = m_node_based_graph->GetTarget(current_edge);
 
                         // Traverse outgoing edges

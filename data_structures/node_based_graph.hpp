@@ -70,6 +70,8 @@ struct NodeBasedEdgeData
                (nameID == other.nameID) && (ignore_in_grid == other.ignore_in_grid) &&
                (travel_mode == other.travel_mode);
     }
+
+    bool HasForwardDir() const { return forward; }
 };
 
 using NodeBasedDynamicGraph = DynamicGraph<NodeBasedEdgeData>;
