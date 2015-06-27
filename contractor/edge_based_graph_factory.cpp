@@ -475,9 +475,9 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedNodes()
 
     component_explorer.run();
 
-    // dump text info for debugging purposes
-    dumpNodesTxt("nodes.txt", component_explorer);
-    dumpEdgesTxt("edges.txt");
+//    // dump text info for debugging purposes
+//    dumpNodesTxt("nodes.txt", component_explorer);
+//    dumpEdgesTxt("edges.txt");
 
     SimpleLogger().Write() << "identified: "
                            << component_explorer.get_number_of_components() - removed_node_count

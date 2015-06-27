@@ -107,9 +107,9 @@ template <class DataFacadeT> class ViaRoutePlugin final : public BasePlugin
             }
         }
 
-        for ( int i = 0; i < phantom_node_pair_list.size(); i++ ) {
-            std::cout << i << " " << phantom_node_pair_list[i].first << std::endl;
-        }
+//        for ( int i = 0; i < phantom_node_pair_list.size(); i++ ) {
+//            std::cout << i << " " << phantom_node_pair_list[i].first << std::endl;
+//        }
 
         auto check_component_id_is_tiny = [](const phantom_node_pair &phantom_pair)
         {
