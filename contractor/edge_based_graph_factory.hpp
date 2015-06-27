@@ -39,6 +39,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "../data_structures/turn_instructions.hpp"
 #include "../data_structures/node_based_graph.hpp"
 #include "../data_structures/restriction_map.hpp"
+#include "../algorithms/tiny_components.hpp"
 
 #include <algorithm>
 #include <iosfwd>
@@ -124,6 +125,9 @@ class EdgeBasedGraphFactory
     NodeID max_id;
     std::size_t removed_node_count;
 
+    void dumpNodesTxt(const char *filename, TarjanSCC<NodeBasedDynamicGraph>& component_explorer);
+
+    void dumpEdgesTxt(const char *filename) const;
 };
 
 #endif /* EDGE_BASED_GRAPH_FACTORY_HPP_ */

@@ -475,19 +475,9 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedNodes()
 
     component_explorer.run();
 
-    // debug dump nodes
-    FILE *fout = fopen("nodes.txt", "w");
-    for ( NodeBasedDynamicGraph::NodeIterator node = 0; node < m_node_based_graph->GetNumberOfEdges(); ++node ) {
-        fprintf(fout, "[%6d]    ", node);
-        for ( auto edge : m_node_based_graph->GetAdjacentEdgeRange(node) )
-            fprintf(fout, "%6d", edge);
-        fprintf(fout, "    component=%d\n", component_explorer.get_component_id(node));
-        fprintf(fout, "            ");
-        for ( auto edge : m_node_based_graph->GetAdjacentEdgeRange(node) )
-            fprintf(fout, "%6d", m_node_based_graph->GetTarget(edge));
-        fprintf(fout, "\n");
-    }
-    fclose(fout);
+    // dump text info for debugging purposes
+    dumpNodesTxt("nodes.txt", component_explorer);
+    dumpEdgesTxt("edges.txt");
 
     SimpleLogger().Write() << "identified: "
                            << component_explorer.get_number_of_components() - removed_node_count
@@ -808,3 +798,28 @@ unsigned EdgeBasedGraphFactory::GetNumberOfEdgeBasedNodes() const
 {
     return m_number_of_edge_based_nodes;
 }
+
+void EdgeBasedGraphFactory::dumpNodesTxt(const char *filename, TarjanSCC<NodeBasedDynamicGraph> &component_explorer) {
+    FILE *fout = fopen(filename, "w");
+    for ( NodeBasedDynamicGraph::NodeIterator node = 0; node < m_node_based_graph->GetNumberOfNodes(); ++node ) {
+        fprintf(fout, "[N%d]\t deg=%d/%d\t comp=%-5d\t ",
+                node, m_node_based_graph->GetOutDegree(node), m_node_based_graph->GetDirectedOutDegree(node),
+                component_explorer.get_component_id(node));
+        for ( auto edge : m_node_based_graph->GetAdjacentEdgeRange(node) ) {
+            const NodeBasedEdgeData& data = m_node_based_graph->GetEdgeData(edge);
+            fprintf(fout, "E%d[I%d](>N%d)\t ", edge, data.edgeBasedNodeID, m_node_based_graph->GetTarget(edge));
+        }
+        fprintf(fout, "\n");
+    }
+    fclose(fout);
+}
+
+void EdgeBasedGraphFactory::dumpEdgesTxt(const char *filename) const {
+    FILE* fout2 = fopen(filename, "w");
+    for ( NodeBasedDynamicGraph::EdgeIterator edge = 0; edge < m_node_based_graph->GetNumberOfEdges(); ++edge ) {
+        const NodeBasedEdgeData& data = m_node_based_graph->GetEdgeData(edge);
+        fprintf(fout2, "[E%d]   id=%d  fwd=%d  back=%d\n", edge, data.edgeBasedNodeID, data.forward, data.backward);
+    }
+    fclose(fout2);
+}
+
