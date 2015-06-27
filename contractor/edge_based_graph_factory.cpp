@@ -475,6 +475,20 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedNodes()
 
     component_explorer.run();
 
+    // debug dump nodes
+    FILE *fout = fopen("nodes.txt", "w");
+    for ( NodeBasedDynamicGraph::NodeIterator node = 0; node < m_node_based_graph->GetNumberOfEdges(); ++node ) {
+        fprintf(fout, "[%6d]    ", node);
+        for ( auto edge : m_node_based_graph->GetAdjacentEdgeRange(node) )
+            fprintf(fout, "%6d", edge);
+        fprintf(fout, "    component=%d\n", component_explorer.get_component_id(node));
+        fprintf(fout, "            ");
+        for ( auto edge : m_node_based_graph->GetAdjacentEdgeRange(node) )
+            fprintf(fout, "%6d", m_node_based_graph->GetTarget(edge));
+        fprintf(fout, "\n");
+    }
+    fclose(fout);
+
     SimpleLogger().Write() << "identified: "
                            << component_explorer.get_number_of_components() - removed_node_count
                            << " (compressed) components";
