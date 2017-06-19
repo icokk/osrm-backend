@@ -8,11 +8,15 @@
 
 #include <tbb/task_scheduler_init.h>
 
+#include <boost/algorithm/string/join.hpp>
 #include <boost/assert.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
+#include <boost/range/adaptor/transformed.hpp>
 
 #include <iostream>
+#include <iterator>
+#include <regex>
 
 using namespace osrm;
 
@@ -23,7 +27,48 @@ enum class return_code : unsigned
     exit
 };
 
-return_code parseArguments(int argc, char *argv[], partition::PartitionConfig &partition_config)
+struct MaxCellSizesArgument
+{
+    std::vector<size_t> value;
+};
+
+std::ostream &operator<<(std::ostream &os, const MaxCellSizesArgument &arg)
+{
+    auto to_string = [](std::size_t x) { return std::to_string(x); };
+    return os << boost::algorithm::join(arg.value | boost::adaptors::transformed(to_string), ",");
+}
+
+void validate(boost::any &v, const std::vector<std::string> &values, MaxCellSizesArgument *, int)
+{
+    using namespace boost::program_options;
+    using namespace boost::adaptors;
+
+    // Make sure no previous assignment to 'v' was made.
+    validators::check_first_occurrence(v);
+    // Extract the first string from 'values'. If there is more than
+    // one string, it's an error, and exception will be thrown.
+    const std::string &s = validators::get_single_string(values);
+
+    std::regex re(",");
+    std::vector<size_t> output;
+    std::transform(std::sregex_token_iterator(s.begin(), s.end(), re, -1),
+                   std::sregex_token_iterator(),
+                   std::back_inserter(output),
+                   [](const auto &x) {
+                       try
+                       {
+                           return boost::lexical_cast<std::size_t>(x);
+                       }
+                       catch (const boost::bad_lexical_cast &)
+                       {
+                           throw validation_error(validation_error::invalid_option_value);
+                       }
+                   });
+
+    v = boost::any(MaxCellSizesArgument{output});
+}
+
+return_code parseArguments(int argc, char *argv[], partition::PartitionConfig &config)
 {
     // declare a group of options that will be allowed only on command line
     boost::program_options::options_description generic_options("Options");
@@ -34,40 +79,41 @@ return_code parseArguments(int argc, char *argv[], partition::PartitionConfig &p
     config_options.add_options()
         //
         ("threads,t",
-         boost::program_options::value<unsigned int>(&partition_config.requested_num_threads)
+         boost::program_options::value<unsigned int>(&config.requested_num_threads)
              ->default_value(tbb::task_scheduler_init::default_num_threads()),
          "Number of threads to use")
         //
-        ("min-cell-size",
-         boost::program_options::value<std::size_t>(&partition_config.minimum_cell_size)
-             ->default_value(128),
-         "Bisection termination citerion based on cell size")
-        //
         ("balance",
-         boost::program_options::value<double>(&partition_config.balance)->default_value(1.2),
+         boost::program_options::value<double>(&config.balance)->default_value(config.balance),
          "Balance for left and right side in single bisection")
         //
         ("boundary",
-         boost::program_options::value<double>(&partition_config.boundary_factor)
-             ->default_value(0.25),
+         boost::program_options::value<double>(&config.boundary_factor)
+             ->default_value(config.boundary_factor),
          "Percentage of embedded nodes to contract as sources and sinks")
         //
         ("optimizing-cuts",
-         boost::program_options::value<std::size_t>(&partition_config.num_optimizing_cuts)
-             ->default_value(10),
+         boost::program_options::value<std::size_t>(&config.num_optimizing_cuts)
+             ->default_value(config.num_optimizing_cuts),
          "Number of cuts to use for optimizing a single bisection")
         //
         ("small-component-size",
-         boost::program_options::value<std::size_t>(&partition_config.small_component_size)
-             ->default_value(1000),
-         "Size threshold for small components.");
+         boost::program_options::value<std::size_t>(&config.small_component_size)
+             ->default_value(config.small_component_size),
+         "Size threshold for small components.")
+        //
+        ("max-cell-sizes",
+         boost::program_options::value<MaxCellSizesArgument>()->default_value(
+             MaxCellSizesArgument{config.max_cell_sizes}),
+         "Maximum cell sizes starting from the level 1. The first cell size value is a bisection "
+         "termination citerion");
 
     // hidden options, will be allowed on command line, but will not be
     // shown to the user
     boost::program_options::options_description hidden_options("Hidden options");
     hidden_options.add_options()(
         "input,i",
-        boost::program_options::value<boost::filesystem::path>(&partition_config.base_path),
+        boost::program_options::value<boost::filesystem::path>(&config.base_path),
         "Input file in .osrm format");
 
     // positional option
@@ -117,6 +163,18 @@ return_code parseArguments(int argc, char *argv[], partition::PartitionConfig &p
     {
         std::cout << visible_options;
         return return_code::fail;
+    }
+
+    if (option_variables.count("max-cell-sizes"))
+    {
+        config.max_cell_sizes = option_variables["max-cell-sizes"].as<MaxCellSizesArgument>().value;
+
+        if (!std::is_sorted(config.max_cell_sizes.begin(), config.max_cell_sizes.end()))
+        {
+            util::Log(logERROR)
+                << "The maximum cell sizes array must be sorted in non-descending order.";
+            return return_code::fail;
+        }
     }
 
     return return_code::ok;

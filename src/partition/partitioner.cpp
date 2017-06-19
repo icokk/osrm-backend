@@ -4,12 +4,12 @@
 #include "partition/cell_storage.hpp"
 #include "partition/compressed_node_based_graph_reader.hpp"
 #include "partition/edge_based_graph_reader.hpp"
-#include "partition/io.hpp"
+#include "partition/files.hpp"
 #include "partition/multi_level_partition.hpp"
 #include "partition/recursive_bisection.hpp"
 #include "partition/remove_unconnected.hpp"
 
-#include "extractor/io.hpp"
+#include "extractor/files.hpp"
 
 #include "util/coordinate.hpp"
 #include "util/geojson_debug_logger.hpp"
@@ -108,12 +108,12 @@ int Partitioner::Run(const PartitionConfig &config)
         makeBisectionGraph(compressed_node_based_graph.coordinates,
                            adaptToBisectionEdge(std::move(compressed_node_based_graph.edges)));
 
-    util::Log() << " running partition: " << config.minimum_cell_size << " " << config.balance
+    util::Log() << " running partition: " << config.max_cell_sizes.front() << " " << config.balance
                 << " " << config.boundary_factor << " " << config.num_optimizing_cuts << " "
                 << config.small_component_size
                 << " # max_cell_size balance boundary cuts small_component_size";
     RecursiveBisection recursive_bisection(graph,
-                                           config.minimum_cell_size,
+                                           config.max_cell_sizes.front(),
                                            config.balance,
                                            config.boundary_factor,
                                            config.num_optimizing_cuts,
@@ -126,7 +126,7 @@ int Partitioner::Run(const PartitionConfig &config)
     // For details see #3205
 
     std::vector<extractor::NBGToEBG> mapping;
-    extractor::io::read(config.cnbg_ebg_mapping_path.string(), mapping);
+    extractor::files::readNBGMapping(config.cnbg_ebg_mapping_path.string(), mapping);
     util::Log() << "Loaded node based graph to edge based graph mapping";
 
     auto edge_based_graph = LoadEdgeBasedGraph(config.edge_based_graph_path.string());
@@ -161,11 +161,7 @@ int Partitioner::Run(const PartitionConfig &config)
     std::vector<Partition> partitions;
     std::vector<std::uint32_t> level_to_num_cells;
     std::tie(partitions, level_to_num_cells) =
-        bisectionToPartition(edge_based_partition_ids,
-                             {config.minimum_cell_size,
-                              config.minimum_cell_size * 32,
-                              config.minimum_cell_size * 32 * 16,
-                              config.minimum_cell_size * 32 * 16 * 32});
+        bisectionToPartition(edge_based_partition_ids, config.max_cell_sizes);
 
     auto num_unconnected = removeUnconnectedBoundaryNodes(*edge_based_graph, partitions);
     util::Log() << "Fixed " << num_unconnected << " unconnected nodes";
@@ -188,8 +184,8 @@ int Partitioner::Run(const PartitionConfig &config)
     util::Log() << "CellStorage constructed in " << TIMER_SEC(cell_storage) << " seconds";
 
     TIMER_START(writing_mld_data);
-    io::write(config.mld_partition_path, mlp);
-    io::write(config.mld_storage_path, storage);
+    files::writePartition(config.mld_partition_path, mlp);
+    files::writeCells(config.mld_storage_path, storage);
     TIMER_STOP(writing_mld_data);
     util::Log() << "MLD data writing took " << TIMER_SEC(writing_mld_data) << " seconds";
 

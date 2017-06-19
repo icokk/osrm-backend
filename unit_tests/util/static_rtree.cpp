@@ -41,11 +41,11 @@ constexpr uint32_t TEST_LEAF_NODE_SIZE = 64;
 
 using TestData = extractor::EdgeBasedNode;
 using TestStaticRTree = StaticRTree<TestData,
-                                    std::vector<Coordinate>,
-                                    false,
+                                    osrm::storage::Ownership::Container,
                                     TEST_BRANCHING_FACTOR,
                                     TEST_LEAF_NODE_SIZE>;
-using MiniStaticRTree = StaticRTree<TestData, std::vector<Coordinate>, false, 2, 128>;
+using MiniStaticRTree = StaticRTree<TestData, osrm::storage::Ownership::Container, 2, 128>;
+using TestDataFacade = MockDataFacade<osrm::engine::routing_algorithms::ch::Algorithm>;
 
 // Choosen by a fair W20 dice roll (this value is completely arbitrary)
 constexpr unsigned RANDOM_SEED = 42;
@@ -273,7 +273,7 @@ void construction_test(const std::string &prefix, FixtureT *fixture)
 
 BOOST_FIXTURE_TEST_CASE(construct_tiny, TestRandomGraphFixture_10_30)
 {
-    using TinyTestTree = StaticRTree<TestData, std::vector<Coordinate>, false, 2, 64>;
+    using TinyTestTree = StaticRTree<TestData, osrm::storage::Ownership::Container, 2, 64>;
     construction_test<TinyTestTree>("test_tiny", this);
 }
 
@@ -358,8 +358,8 @@ BOOST_AUTO_TEST_CASE(radius_regression_test)
     std::string nodes_path;
     build_rtree<GraphFixture, MiniStaticRTree>("test_angle", &fixture, leaves_path, nodes_path);
     MiniStaticRTree rtree(nodes_path, leaves_path, fixture.coords);
-    MockDataFacade<engine::algorithm::CH> mockfacade;
-    engine::GeospatialQuery<MiniStaticRTree, MockDataFacade<engine::algorithm::CH>> query(
+    TestDataFacade mockfacade;
+    engine::GeospatialQuery<MiniStaticRTree, TestDataFacade> query(
         rtree, fixture.coords, mockfacade);
 
     Coordinate input(FloatLongitude{5.2}, FloatLatitude{5.0});
@@ -385,8 +385,8 @@ BOOST_AUTO_TEST_CASE(bearing_tests)
     std::string nodes_path;
     build_rtree<GraphFixture, MiniStaticRTree>("test_bearing", &fixture, leaves_path, nodes_path);
     MiniStaticRTree rtree(nodes_path, leaves_path, fixture.coords);
-    MockDataFacade<engine::algorithm::CH> mockfacade;
-    engine::GeospatialQuery<MiniStaticRTree, MockDataFacade<engine::algorithm::CH>> query(
+    TestDataFacade mockfacade;
+    engine::GeospatialQuery<MiniStaticRTree, TestDataFacade> query(
         rtree, fixture.coords, mockfacade);
 
     Coordinate input(FloatLongitude{5.1}, FloatLatitude{5.0});
@@ -459,8 +459,8 @@ BOOST_AUTO_TEST_CASE(bbox_search_tests)
     std::string nodes_path;
     build_rtree<GraphFixture, MiniStaticRTree>("test_bbox", &fixture, leaves_path, nodes_path);
     MiniStaticRTree rtree(nodes_path, leaves_path, fixture.coords);
-    MockDataFacade<engine::algorithm::CH> mockfacade;
-    engine::GeospatialQuery<MiniStaticRTree, MockDataFacade<engine::algorithm::CH>> query(
+    TestDataFacade mockfacade;
+    engine::GeospatialQuery<MiniStaticRTree, TestDataFacade> query(
         rtree, fixture.coords, mockfacade);
 
     {

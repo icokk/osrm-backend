@@ -4,16 +4,16 @@
 
 #include "extractor/compressed_edge_container.hpp"
 #include "extractor/edge_based_graph_factory.hpp"
-#include "extractor/io.hpp"
+#include "extractor/files.hpp"
 #include "extractor/node_based_edge.hpp"
 
 #include "storage/io.hpp"
+
 #include "util/exception.hpp"
 #include "util/exception_utils.hpp"
 #include "util/for_each_pair.hpp"
 #include "util/graph_loader.hpp"
 #include "util/integer_range.hpp"
-#include "util/io.hpp"
 #include "util/log.hpp"
 #include "util/static_graph.hpp"
 #include "util/static_rtree.hpp"
@@ -34,6 +34,7 @@
 #include <tbb/parallel_invoke.h>
 
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <cstdint>
 #include <fstream>
@@ -62,18 +63,9 @@ inline EdgeWeight convertToDuration(double speed_in_kmh, double distance_in_mete
     if (speed_in_kmh <= 0.)
         return MAXIMAL_EDGE_DURATION;
 
-    const double speed_in_ms = speed_in_kmh / 3.6;
-    const double duration = distance_in_meters / speed_in_ms;
-    return std::max<EdgeWeight>(1, static_cast<EdgeWeight>(std::round(duration * 10.)));
-}
-
-inline EdgeWeight convertToWeight(double weight, double weight_multiplier, EdgeWeight duration)
-{
-    if (std::isfinite(weight))
-        return std::round(weight * weight_multiplier);
-
-    return duration == MAXIMAL_EDGE_DURATION ? INVALID_EDGE_WEIGHT
-                                             : duration * weight_multiplier / 10.;
+    const auto speed_in_ms = speed_in_kmh / 3.6;
+    const auto duration = distance_in_meters / speed_in_ms;
+    return std::max(1, boost::numeric_cast<EdgeWeight>(std::round(duration * 10.)));
 }
 
 #if !defined(NDEBUG)
@@ -81,20 +73,15 @@ void checkWeightsConsistency(
     const UpdaterConfig &config,
     const std::vector<osrm::extractor::EdgeBasedEdge> &edge_based_edge_list)
 {
-    using Reader = osrm::storage::io::FileReader;
-    using OriginalEdgeData = osrm::extractor::OriginalEdgeData;
-
     extractor::SegmentDataContainer segment_data;
-    extractor::io::read(config.geometry_path, segment_data);
+    extractor::files::readSegmentData(config.geometry_path, segment_data);
 
-    Reader edges_input_file(config.osrm_input_path.string() + ".edges", Reader::HasNoFingerprint);
-    std::vector<OriginalEdgeData> current_edge_data(edges_input_file.ReadElementCount64());
-    edges_input_file.ReadInto(current_edge_data);
+    extractor::TurnDataContainer turn_data;
+    extractor::files::readTurnData(config.osrm_input_path.string() + ".edges", turn_data);
 
     for (auto &edge : edge_based_edge_list)
     {
-        BOOST_ASSERT(edge.data.turn_id < current_edge_data.size());
-        auto geometry_id = current_edge_data[edge.data.turn_id].via_geometry;
+        auto geometry_id = turn_data.GetGeometryID(edge.data.turn_id);
 
         if (geometry_id.forward)
         {
@@ -145,12 +132,9 @@ updateSegmentData(const UpdaterConfig &config,
                   const SegmentLookupTable &segment_speed_lookup,
                   extractor::SegmentDataContainer &segment_data)
 {
-    auto weight_multiplier = profile_properties.GetWeightMultiplier();
-
-    std::vector<extractor::QueryNode> internal_to_external_node_map;
-    storage::io::FileReader nodes_file(config.node_based_graph_path,
-                                       storage::io::FileReader::HasNoFingerprint);
-    nodes_file.DeserializeVector(internal_to_external_node_map);
+    std::vector<util::Coordinate> coordinates;
+    util::PackedVector<OSMNodeID> osm_node_ids;
+    extractor::files::readNodes(config.node_based_graph_path, coordinates, osm_node_ids);
 
     // vector to count used speeds for logging
     // size offset by one since index 0 is used for speeds not from external file
@@ -159,6 +143,25 @@ updateSegmentData(const UpdaterConfig &config,
     tbb::enumerable_thread_specific<counters_type> segment_speeds_counters(
         counters_type(num_counters, 0));
     const constexpr auto LUA_SOURCE = 0;
+
+    // closure to convert SpeedSource value to weight and count fallbacks to durations
+    std::atomic<std::uint32_t> fallbacks_to_duration{0};
+    auto convertToWeight = [&profile_properties, &fallbacks_to_duration](
+        const SpeedSource &value, double distance_in_meters) {
+        double rate = value.rate;
+        if (!std::isfinite(rate))
+        { // use speed value in meters per second as the rate
+            ++fallbacks_to_duration;
+            rate = value.speed / 3.6;
+        }
+
+        if (rate <= 0.)
+            return INVALID_EDGE_WEIGHT;
+
+        const auto weight_multiplier = profile_properties.GetWeightMultiplier();
+        const auto weight = distance_in_meters / rate;
+        return std::max(1, boost::numeric_cast<EdgeWeight>(std::round(weight * weight_multiplier)));
+    };
 
     // The check here is enabled by the `--edge-weight-updates-over-factor` flag it logs a
     // warning if the new duration exceeds a heuristic of what a reasonable duration update is
@@ -184,8 +187,7 @@ updateSegmentData(const UpdaterConfig &config,
             segment_lengths.reserve(nodes_range.size() + 1);
             util::for_each_pair(nodes_range, [&](const auto &u, const auto &v) {
                 segment_lengths.push_back(util::coordinate_calculation::greatCircleDistance(
-                    util::Coordinate{internal_to_external_node_map[u]},
-                    util::Coordinate{internal_to_external_node_map[v]}));
+                    coordinates[u], coordinates[v]));
             });
 
             auto fwd_weights_range = segment_data.GetForwardWeights(geometry_id);
@@ -194,14 +196,13 @@ updateSegmentData(const UpdaterConfig &config,
             bool fwd_was_updated = false;
             for (const auto segment_offset : util::irange<std::size_t>(0, fwd_weights_range.size()))
             {
-                auto u = internal_to_external_node_map[nodes_range[segment_offset]].node_id;
-                auto v = internal_to_external_node_map[nodes_range[segment_offset + 1]].node_id;
+                auto u = osm_node_ids[nodes_range[segment_offset]];
+                auto v = osm_node_ids[nodes_range[segment_offset + 1]];
                 if (auto value = segment_speed_lookup({u, v}))
                 {
-                    auto new_duration =
-                        convertToDuration(value->speed, segment_lengths[segment_offset]);
-                    auto new_weight =
-                        convertToWeight(value->weight, weight_multiplier, new_duration);
+                    auto segment_length = segment_lengths[segment_offset];
+                    auto new_duration = convertToDuration(value->speed, segment_length);
+                    auto new_weight = convertToWeight(*value, segment_length);
                     fwd_was_updated = true;
 
                     fwd_weights_range[segment_offset] = new_weight;
@@ -228,14 +229,13 @@ updateSegmentData(const UpdaterConfig &config,
 
             for (const auto segment_offset : util::irange<std::size_t>(0, rev_weights_range.size()))
             {
-                auto u = internal_to_external_node_map[nodes_range[segment_offset]].node_id;
-                auto v = internal_to_external_node_map[nodes_range[segment_offset + 1]].node_id;
+                auto u = osm_node_ids[nodes_range[segment_offset]];
+                auto v = osm_node_ids[nodes_range[segment_offset + 1]];
                 if (auto value = segment_speed_lookup({v, u}))
                 {
-                    auto new_duration =
-                        convertToDuration(value->speed, segment_lengths[segment_offset]);
-                    auto new_weight =
-                        convertToWeight(value->weight, weight_multiplier, new_duration);
+                    auto segment_length = segment_lengths[segment_offset];
+                    auto new_duration = convertToDuration(value->speed, segment_length);
+                    auto new_weight = convertToWeight(*value, segment_length);
                     rev_was_updated = true;
 
                     rev_weights_range[segment_offset] = new_weight;
@@ -278,6 +278,13 @@ updateSegmentData(const UpdaterConfig &config,
         }
     }
 
+    if (!profile_properties.fallback_to_duration && fallbacks_to_duration > 0)
+    {
+        util::Log(logWARNING) << "Speed values were used to update " << fallbacks_to_duration
+                              << " segments for '" << profile_properties.GetWeightName()
+                              << "' profile";
+    }
+
     if (config.log_edge_updates_factor > 0)
     {
         BOOST_ASSERT(segment_data_backup);
@@ -305,9 +312,8 @@ updateSegmentData(const UpdaterConfig &config,
                 if (old_fwd_durations_range[segment_offset] >=
                     (new_fwd_durations_range[segment_offset] * config.log_edge_updates_factor))
                 {
-                    auto from = internal_to_external_node_map[nodes_range[segment_offset]].node_id;
-                    auto to =
-                        internal_to_external_node_map[nodes_range[segment_offset + 1]].node_id;
+                    auto from = osm_node_ids[nodes_range[segment_offset]];
+                    auto to = osm_node_ids[nodes_range[segment_offset + 1]];
                     util::Log(logWARNING)
                         << "[weight updates] Edge weight update from "
                         << old_fwd_durations_range[segment_offset] / 10. << "s to "
@@ -327,9 +333,8 @@ updateSegmentData(const UpdaterConfig &config,
                 if (old_rev_durations_range[segment_offset] >=
                     (new_rev_durations_range[segment_offset] * config.log_edge_updates_factor))
                 {
-                    auto from =
-                        internal_to_external_node_map[nodes_range[segment_offset + 1]].node_id;
-                    auto to = internal_to_external_node_map[nodes_range[segment_offset]].node_id;
+                    auto from = osm_node_ids[nodes_range[segment_offset + 1]];
+                    auto to = osm_node_ids[nodes_range[segment_offset]];
                     util::Log(logWARNING)
                         << "[weight updates] Edge weight update from "
                         << old_rev_durations_range[segment_offset] / 10. << "s to "
@@ -361,7 +366,7 @@ void saveDatasourcesNames(const UpdaterConfig &config)
         source++;
     }
 
-    extractor::io::write(config.datasource_names_path, sources);
+    extractor::files::writeDatasources(config.datasource_names_path, sources);
 }
 
 std::vector<std::uint64_t>
@@ -451,33 +456,31 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
         throw util::exception("Limit of 255 segment speed and turn penalty files each reached" +
                               SOURCE_REF);
 
-    extractor::ProfileProperties profile_properties;
-    std::vector<extractor::OriginalEdgeData> edge_data;
+    extractor::TurnDataContainer turn_data;
     extractor::SegmentDataContainer segment_data;
+    extractor::ProfileProperties profile_properties;
     std::vector<TurnPenalty> turn_weight_penalties;
     std::vector<TurnPenalty> turn_duration_penalties;
     if (update_edge_weights || update_turn_penalties)
     {
         const auto load_segment_data = [&] {
-            extractor::io::read(config.geometry_path, segment_data);
+            extractor::files::readSegmentData(config.geometry_path, segment_data);
         };
 
         const auto load_edge_data = [&] {
-            storage::io::FileReader edges_input_file(config.edge_data_path,
-                                                     storage::io::FileReader::HasNoFingerprint);
-            edges_input_file.DeserializeVector(edge_data);
+            extractor::files::readTurnData(config.edge_data_path, turn_data);
         };
 
         const auto load_turn_weight_penalties = [&] {
             using storage::io::FileReader;
-            FileReader file(config.turn_weight_penalties_path, FileReader::HasNoFingerprint);
-            file.DeserializeVector(turn_weight_penalties);
+            FileReader reader(config.turn_weight_penalties_path, FileReader::HasNoFingerprint);
+            storage::serialization::read(reader, turn_weight_penalties);
         };
 
         const auto load_turn_duration_penalties = [&] {
             using storage::io::FileReader;
-            FileReader file(config.turn_duration_penalties_path, FileReader::HasNoFingerprint);
-            file.DeserializeVector(turn_duration_penalties);
+            FileReader reader(config.turn_duration_penalties_path, FileReader::HasNoFingerprint);
+            storage::serialization::read(reader, turn_duration_penalties);
         };
 
         const auto load_profile_properties = [&] {
@@ -503,7 +506,7 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
         updated_segments =
             updateSegmentData(config, profile_properties, segment_speed_lookup, segment_data);
         // Now save out the updated compressed geometries
-        extractor::io::write(config.geometry_path, segment_data);
+        extractor::files::writeSegmentData(config.geometry_path, segment_data);
         TIMER_STOP(segment);
         util::Log() << "Updating segment data took " << TIMER_MSEC(segment) << "ms.";
     }
@@ -520,12 +523,11 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
         updated_segments.resize(offset + updated_turn_penalties.size());
         // we need to re-compute all edges that have updated turn penalties.
         // this marks it for re-computation
-        std::transform(updated_turn_penalties.begin(),
-                       updated_turn_penalties.end(),
-                       updated_segments.begin() + offset,
-                       [&edge_data](const std::uint64_t edge_index) {
-                           return edge_data[edge_index].via_geometry;
-                       });
+        std::transform(
+            updated_turn_penalties.begin(),
+            updated_turn_penalties.end(),
+            updated_segments.begin() + offset,
+            [&turn_data](const std::uint64_t turn_id) { return turn_data.GetGeometryID(turn_id); });
     }
 
     tbb::parallel_sort(updated_segments.begin(),
@@ -583,7 +585,7 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
                       });
 
     const auto update_edge = [&](extractor::EdgeBasedEdge &edge) {
-        const auto geometry_id = edge_data[edge.data.turn_id].via_geometry;
+        const auto geometry_id = turn_data.GetGeometryID(edge.data.turn_id);
         auto updated_iter = std::lower_bound(updated_segments.begin(),
                                              updated_segments.end(),
                                              geometry_id,
@@ -659,8 +661,8 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
     if (update_turn_penalties)
     {
         const auto save_penalties = [](const auto &filename, const auto &data) -> void {
-            storage::io::FileWriter file(filename, storage::io::FileWriter::HasNoFingerprint);
-            file.SerializeVector(data);
+            storage::io::FileWriter writer(filename, storage::io::FileWriter::HasNoFingerprint);
+            storage::serialization::write(writer, data);
         };
 
         tbb::parallel_invoke(

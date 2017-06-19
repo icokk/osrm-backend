@@ -4,10 +4,11 @@
 #include "util/exception.hpp"
 #include "util/for_each_pair.hpp"
 #include "util/msb.hpp"
-#include "util/shared_memory_vector_wrapper.hpp"
 #include "util/typedefs.hpp"
+#include "util/vector_view.hpp"
 
-#include "storage/io.hpp"
+#include "storage/io_fwd.hpp"
+#include "storage/shared_memory_ownership.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,31 +26,29 @@ namespace partition
 {
 namespace detail
 {
-template <bool UseShareMemory> class MultiLevelPartitionImpl;
+template <storage::Ownership Ownership> class MultiLevelPartitionImpl;
 }
-using MultiLevelPartition = detail::MultiLevelPartitionImpl<false>;
-using MultiLevelPartitionView = detail::MultiLevelPartitionImpl<true>;
+using MultiLevelPartition = detail::MultiLevelPartitionImpl<storage::Ownership::Container>;
+using MultiLevelPartitionView = detail::MultiLevelPartitionImpl<storage::Ownership::View>;
 
-namespace io
+namespace serialization
 {
-template <bool UseShareMemory>
-void read(const boost::filesystem::path &file,
-          detail::MultiLevelPartitionImpl<UseShareMemory> &mlp);
-template <bool UseShareMemory>
-void write(const boost::filesystem::path &file,
-           const detail::MultiLevelPartitionImpl<UseShareMemory> &mlp);
+template <storage::Ownership Ownership>
+void read(storage::io::FileReader &reader, detail::MultiLevelPartitionImpl<Ownership> &mlp);
+template <storage::Ownership Ownership>
+void write(storage::io::FileWriter &writer, const detail::MultiLevelPartitionImpl<Ownership> &mlp);
 }
 
 namespace detail
 {
 
-template <bool UseShareMemory> class MultiLevelPartitionImpl final
+template <storage::Ownership Ownership> class MultiLevelPartitionImpl final
 {
     // we will support at most 16 levels
     static const constexpr std::uint8_t MAX_NUM_LEVEL = 16;
     static const constexpr std::uint8_t NUM_PARTITION_BITS = sizeof(PartitionID) * CHAR_BIT;
 
-    template <typename T> using Vector = typename util::ShM<T, UseShareMemory>::vector;
+    template <typename T> using Vector = util::ViewOrVector<T, Ownership>;
 
   public:
     // Contains all data necessary to describe the level hierarchy
@@ -62,13 +61,16 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
         std::array<LevelID, NUM_PARTITION_BITS> bit_to_level;
         std::array<std::uint32_t, MAX_NUM_LEVEL - 1> lidx_to_children_offsets;
     };
+    using LevelDataPtr = typename std::conditional<Ownership == storage::Ownership::View,
+                                                   LevelData *,
+                                                   std::unique_ptr<LevelData>>::type;
 
-    MultiLevelPartitionImpl() = default;
+    MultiLevelPartitionImpl();
 
     // cell_sizes is index by level (starting at 0, the base graph).
     // However level 0 always needs to have cell size 1, since it is the
     // basegraph.
-    template <typename = typename std::enable_if<!UseShareMemory>>
+    template <typename = typename std::enable_if<Ownership == storage::Ownership::Container>>
     MultiLevelPartitionImpl(const std::vector<std::vector<CellID>> &partitions,
                             const std::vector<std::uint32_t> &lidx_to_num_cells)
         : level_data(MakeLevelData(lidx_to_num_cells))
@@ -76,8 +78,8 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
         InitializePartitionIDs(partitions);
     }
 
-    template <typename = typename std::enable_if<UseShareMemory>>
-    MultiLevelPartitionImpl(LevelData level_data,
+    template <typename = typename std::enable_if<Ownership == storage::Ownership::View>>
+    MultiLevelPartitionImpl(LevelDataPtr level_data,
                             Vector<PartitionID> partition_,
                             Vector<CellID> cell_to_children_)
         : level_data(std::move(level_data)), partition(std::move(partition_)),
@@ -90,8 +92,8 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
     {
         auto p = partition[node];
         auto lidx = LevelIDToIndex(l);
-        auto masked = p & level_data.lidx_to_mask[lidx];
-        return masked >> level_data.lidx_to_offset[lidx];
+        auto masked = p & level_data->lidx_to_mask[lidx];
+        return masked >> level_data->lidx_to_offset[lidx];
     }
 
     LevelID GetQueryLevel(NodeID start, NodeID target, NodeID node) const
@@ -106,10 +108,10 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
             return 0;
 
         auto msb = util::msb(partition[first] ^ partition[second]);
-        return level_data.bit_to_level[msb];
+        return level_data->bit_to_level[msb];
     }
 
-    std::uint8_t GetNumberOfLevels() const { return level_data.num_level; }
+    std::uint8_t GetNumberOfLevels() const { return level_data->num_level; }
 
     std::uint32_t GetNumberOfCells(LevelID level) const
     {
@@ -121,7 +123,7 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
     {
         BOOST_ASSERT(level > 1);
         auto lidx = LevelIDToIndex(level);
-        auto offset = level_data.lidx_to_children_offsets[lidx];
+        auto offset = level_data->lidx_to_children_offsets[lidx];
         return cell_to_children[offset + cell];
     }
 
@@ -130,14 +132,14 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
     {
         BOOST_ASSERT(level > 1);
         auto lidx = LevelIDToIndex(level);
-        auto offset = level_data.lidx_to_children_offsets[lidx];
+        auto offset = level_data->lidx_to_children_offsets[lidx];
         return cell_to_children[offset + cell + 1];
     }
 
-    friend void io::read<UseShareMemory>(const boost::filesystem::path &file,
-                                         MultiLevelPartitionImpl &mlp);
-    friend void io::write<UseShareMemory>(const boost::filesystem::path &file,
-                                          const MultiLevelPartitionImpl &mlp);
+    friend void serialization::read<Ownership>(storage::io::FileReader &reader,
+                                               MultiLevelPartitionImpl &mlp);
+    friend void serialization::write<Ownership>(storage::io::FileWriter &writer,
+                                                const MultiLevelPartitionImpl &mlp);
 
   private:
     auto MakeLevelData(const std::vector<std::uint32_t> &lidx_to_num_cells)
@@ -146,7 +148,7 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
         auto offsets = MakeLevelOffsets(lidx_to_num_cells);
         auto masks = MakeLevelMasks(offsets, num_level);
         auto bits = MakeBitToLevel(offsets, num_level);
-        return LevelData{num_level, offsets, masks, bits, {0}};
+        return std::make_unique<LevelData>(LevelData{num_level, offsets, masks, bits, {0}});
     }
 
     inline std::size_t LevelIDToIndex(LevelID l) const { return l - 1; }
@@ -160,8 +162,8 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
     {
         auto lidx = LevelIDToIndex(l);
 
-        auto shifted_id = cell_id << level_data.lidx_to_offset[lidx];
-        auto cleared_cell = partition[node] & ~level_data.lidx_to_mask[lidx];
+        auto shifted_id = cell_id << level_data->lidx_to_offset[lidx];
+        auto cleared_cell = partition[node] & ~level_data->lidx_to_mask[lidx];
         partition[node] = cleared_cell | shifted_id;
     }
 
@@ -289,13 +291,13 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
             level--;
         }
 
-        level_data.lidx_to_children_offsets[0] = 0;
+        level_data->lidx_to_children_offsets[0] = 0;
 
         for (auto level_idx = 0UL; level_idx < partitions.size() - 1; ++level_idx)
         {
             const auto &parent_partition = partitions[level_idx + 1];
 
-            level_data.lidx_to_children_offsets[level_idx + 1] = cell_to_children.size();
+            level_data->lidx_to_children_offsets[level_idx + 1] = cell_to_children.size();
 
             CellID last_parent_id = parent_partition[permutation.front()];
             cell_to_children.push_back(GetCell(level_idx + 1, permutation.front()));
@@ -314,11 +316,22 @@ template <bool UseShareMemory> class MultiLevelPartitionImpl final
         }
     }
 
-    //! this is always owned by this class because it is so small
-    LevelData level_data;
+    LevelDataPtr level_data = {};
     Vector<PartitionID> partition;
     Vector<CellID> cell_to_children;
 };
+
+template <>
+inline MultiLevelPartitionImpl<storage::Ownership::Container>::MultiLevelPartitionImpl()
+    : level_data(std::make_unique<LevelData>())
+{
+}
+
+template <>
+inline MultiLevelPartitionImpl<storage::Ownership::View>::MultiLevelPartitionImpl()
+    : level_data(nullptr)
+{
+}
 }
 }
 }

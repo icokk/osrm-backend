@@ -24,9 +24,9 @@ namespace
 // Unrestricted search (Args is const PhantomNodes &):
 //   * use partition.GetQueryLevel to find the node query level based on source and target phantoms
 //   * allow to traverse all cells
-LevelID getNodeQureyLevel(const partition::MultiLevelPartitionView &partition,
-                          NodeID node,
-                          const PhantomNodes &phantom_nodes)
+inline LevelID getNodeQureyLevel(const partition::MultiLevelPartitionView &partition,
+                                 NodeID node,
+                                 const PhantomNodes &phantom_nodes)
 {
     auto level = [&partition, node](const SegmentID &source, const SegmentID &target) {
         if (source.enabled && target.enabled)
@@ -43,25 +43,31 @@ LevelID getNodeQureyLevel(const partition::MultiLevelPartitionView &partition,
                                    phantom_nodes.target_phantom.reverse_segment_id)));
 }
 
-bool checkParentCellRestriction(CellID, const PhantomNodes &) { return true; }
+inline bool checkParentCellRestriction(CellID, const PhantomNodes &) { return true; }
 
 // Restricted search (Args is LevelID, CellID):
 //   * use the fixed level for queries
 //   * check if the node cell is the same as the specified parent onr
-LevelID getNodeQureyLevel(const partition::MultiLevelPartitionView &, NodeID, LevelID level, CellID)
+inline LevelID
+getNodeQureyLevel(const partition::MultiLevelPartitionView &, NodeID, LevelID level, CellID)
 {
     return level;
 }
 
-bool checkParentCellRestriction(CellID cell, LevelID, CellID parent) { return cell == parent; }
+inline bool checkParentCellRestriction(CellID cell, LevelID, CellID parent)
+{
+    return cell == parent;
+}
 }
 
 template <bool DIRECTION, typename... Args>
-void routingStep(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::MLD> &facade,
-                 SearchEngineData::MultiLayerDijkstraHeap &forward_heap,
-                 SearchEngineData::MultiLayerDijkstraHeap &reverse_heap,
+void routingStep(const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                 SearchEngineData<Algorithm>::QueryHeap &forward_heap,
+                 SearchEngineData<Algorithm>::QueryHeap &reverse_heap,
                  NodeID &middle_node,
                  EdgeWeight &path_upper_bound,
+                 const bool force_loop_forward,
+                 const bool force_loop_reverse,
                  Args... args)
 {
     const auto &partition = facade.GetMultiLevelPartition();
@@ -79,7 +85,11 @@ void routingStep(const datafacade::ContiguousInternalMemoryDataFacade<algorithm:
     {
         auto reverse_weight = reverse_heap.GetKey(node);
         auto path_weight = weight + reverse_weight;
-        if (path_weight >= 0 && path_weight < path_upper_bound)
+
+        // if loops are forced, they are so at the source
+        if (!(force_loop_forward && forward_heap.GetData(node).parent == node) &&
+            !(force_loop_reverse && reverse_heap.GetData(node).parent == node) &&
+            (path_weight >= 0) && (path_weight < path_upper_bound))
         {
             middle_node = node;
             path_upper_bound = path_weight;
@@ -143,15 +153,14 @@ void routingStep(const datafacade::ContiguousInternalMemoryDataFacade<algorithm:
     }
 
     // Boundary edges
-    for (const auto edge : facade.GetAdjacentEdgeRange(node))
+    for (const auto edge : facade.GetBorderEdgeRange(level, node))
     {
         const auto &edge_data = facade.GetEdgeData(edge);
         if (DIRECTION == FORWARD_DIRECTION ? edge_data.forward : edge_data.backward)
         {
             const NodeID to = facade.GetTarget(edge);
 
-            if (checkParentCellRestriction(partition.GetCell(level + 1, to), args...) &&
-                partition.GetHighestDifferentLevel(node, to) >= level)
+            if (checkParentCellRestriction(partition.GetCell(level + 1, to), args...))
             {
                 BOOST_ASSERT_MSG(edge_data.weight > 0, "edge_weight invalid");
                 const EdgeWeight to_weight = weight + edge_data.weight;
@@ -172,11 +181,20 @@ void routingStep(const datafacade::ContiguousInternalMemoryDataFacade<algorithm:
 
 template <typename... Args>
 std::tuple<EdgeWeight, NodeID, NodeID, std::vector<EdgeID>>
-search(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::MLD> &facade,
-       SearchEngineData::MultiLayerDijkstraHeap &forward_heap,
-       SearchEngineData::MultiLayerDijkstraHeap &reverse_heap,
+search(SearchEngineData<Algorithm> &engine_working_data,
+       const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+       SearchEngineData<Algorithm>::QueryHeap &forward_heap,
+       SearchEngineData<Algorithm>::QueryHeap &reverse_heap,
+       const bool force_loop_forward,
+       const bool force_loop_reverse,
+       EdgeWeight weight_upper_bound,
        Args... args)
 {
+    if (forward_heap.Empty() || reverse_heap.Empty())
+    {
+        return std::make_tuple(
+            INVALID_EDGE_WEIGHT, SPECIAL_NODEID, SPECIAL_NODEID, std::vector<EdgeID>());
+    }
 
     const auto &partition = facade.GetMultiLevelPartition();
 
@@ -185,7 +203,7 @@ search(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::MLD> &fac
 
     // run two-Target Dijkstra routing step.
     NodeID middle = SPECIAL_NODEID;
-    EdgeWeight weight = INVALID_EDGE_WEIGHT;
+    EdgeWeight weight = weight_upper_bound;
     EdgeWeight forward_heap_min = forward_heap.MinKey();
     EdgeWeight reverse_heap_min = reverse_heap.MinKey();
     while (forward_heap.Size() + reverse_heap.Size() > 0 &&
@@ -193,22 +211,34 @@ search(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::MLD> &fac
     {
         if (!forward_heap.Empty())
         {
-            routingStep<FORWARD_DIRECTION>(
-                facade, forward_heap, reverse_heap, middle, weight, args...);
+            routingStep<FORWARD_DIRECTION>(facade,
+                                           forward_heap,
+                                           reverse_heap,
+                                           middle,
+                                           weight,
+                                           force_loop_forward,
+                                           force_loop_reverse,
+                                           args...);
             if (!forward_heap.Empty())
                 forward_heap_min = forward_heap.MinKey();
         }
         if (!reverse_heap.Empty())
         {
-            routingStep<REVERSE_DIRECTION>(
-                facade, reverse_heap, forward_heap, middle, weight, args...);
+            routingStep<REVERSE_DIRECTION>(facade,
+                                           reverse_heap,
+                                           forward_heap,
+                                           middle,
+                                           weight,
+                                           force_loop_reverse,
+                                           force_loop_forward,
+                                           args...);
             if (!reverse_heap.Empty())
                 reverse_heap_min = reverse_heap.MinKey();
         }
     };
 
     // No path found for both target nodes?
-    if (weight == INVALID_EDGE_WEIGHT || SPECIAL_NODEID == middle)
+    if (weight >= weight_upper_bound || SPECIAL_NODEID == middle)
     {
         return std::make_tuple(
             INVALID_EDGE_WEIGHT, SPECIAL_NODEID, SPECIAL_NODEID, std::vector<EdgeID>());
@@ -269,7 +299,15 @@ search(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::MLD> &fac
             NodeID subpath_source, subpath_target;
             std::vector<EdgeID> subpath;
             std::tie(subpath_weight, subpath_source, subpath_target, subpath) =
-                search(facade, forward_heap, reverse_heap, sublevel, parent_cell_id);
+                search(engine_working_data,
+                       facade,
+                       forward_heap,
+                       reverse_heap,
+                       force_loop_forward,
+                       force_loop_reverse,
+                       INVALID_EDGE_WEIGHT,
+                       sublevel,
+                       parent_cell_id);
             BOOST_ASSERT(!subpath.empty());
             BOOST_ASSERT(subpath_source == source);
             BOOST_ASSERT(subpath_target == target);
@@ -278,6 +316,105 @@ search(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::MLD> &fac
     }
 
     return std::make_tuple(weight, source_node, target_node, std::move(unpacked_path));
+}
+
+// TODO reorder parameters
+// Alias to be compatible with the overload for CoreCH that needs 4 heaps for shortest path search
+inline void search(SearchEngineData<Algorithm> &engine_working_data,
+                   const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                   SearchEngineData<Algorithm>::QueryHeap &forward_heap,
+                   SearchEngineData<Algorithm>::QueryHeap &reverse_heap,
+                   EdgeWeight &weight,
+                   std::vector<NodeID> &packed_leg,
+                   const bool force_loop_forward,
+                   const bool force_loop_reverse,
+                   const PhantomNodes &phantom_nodes,
+                   const EdgeWeight weight_upper_bound = INVALID_EDGE_WEIGHT)
+{
+    NodeID source_node, target_node;
+    std::vector<EdgeID> unpacked_edges;
+    std::tie(weight, source_node, target_node, unpacked_edges) = mld::search(engine_working_data,
+                                                                             facade,
+                                                                             forward_heap,
+                                                                             reverse_heap,
+                                                                             force_loop_forward,
+                                                                             force_loop_reverse,
+                                                                             weight_upper_bound,
+                                                                             phantom_nodes);
+
+    if (weight != INVALID_EDGE_WEIGHT)
+    {
+        packed_leg.push_back(source_node);
+        std::transform(unpacked_edges.begin(),
+                       unpacked_edges.end(),
+                       std::back_inserter(packed_leg),
+                       [&facade](const auto edge) { return facade.GetTarget(edge); });
+    }
+}
+
+template <typename RandomIter, typename FacadeT>
+void unpackPath(const FacadeT &facade,
+                RandomIter packed_path_begin,
+                RandomIter packed_path_end,
+                const PhantomNodes &phantom_nodes,
+                std::vector<PathData> &unpacked_path)
+{
+    const auto nodes_number = std::distance(packed_path_begin, packed_path_end);
+    BOOST_ASSERT(nodes_number > 0);
+
+    std::vector<EdgeID> unpacked_edges;
+
+    auto source_node = *packed_path_begin, target_node = *packed_path_begin;
+
+    if (nodes_number > 1)
+    {
+        target_node = *std::prev(packed_path_end);
+        util::for_each_pair(packed_path_begin,
+                            packed_path_end,
+                            [&facade, &unpacked_edges](const auto from, const auto to) {
+                                unpacked_edges.push_back(facade.FindEdge(from, to));
+                            });
+    }
+
+    annotatePath(facade, source_node, target_node, unpacked_edges, phantom_nodes, unpacked_path);
+}
+
+inline double
+getNetworkDistance(SearchEngineData<Algorithm> &engine_working_data,
+                   const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                   SearchEngineData<Algorithm>::QueryHeap &forward_heap,
+                   SearchEngineData<Algorithm>::QueryHeap &reverse_heap,
+                   const PhantomNode &source_phantom,
+                   const PhantomNode &target_phantom,
+                   EdgeWeight weight_upper_bound = INVALID_EDGE_WEIGHT)
+{
+    forward_heap.Clear();
+    reverse_heap.Clear();
+
+    const PhantomNodes phantom_nodes{source_phantom, target_phantom};
+    insertNodesInHeaps(forward_heap, reverse_heap, phantom_nodes);
+
+    EdgeWeight weight = INVALID_EDGE_WEIGHT;
+    NodeID source_node, target_node;
+    std::vector<EdgeID> unpacked_edges;
+    std::tie(weight, source_node, target_node, unpacked_edges) = search(engine_working_data,
+                                                                        facade,
+                                                                        forward_heap,
+                                                                        reverse_heap,
+                                                                        DO_NOT_FORCE_LOOPS,
+                                                                        DO_NOT_FORCE_LOOPS,
+                                                                        weight_upper_bound,
+                                                                        phantom_nodes);
+
+    if (weight == INVALID_EDGE_WEIGHT)
+    {
+        return std::numeric_limits<double>::max();
+    }
+
+    std::vector<PathData> unpacked_path;
+    annotatePath(facade, source_node, target_node, unpacked_edges, phantom_nodes, unpacked_path);
+
+    return getPathDistance(facade, unpacked_path, source_phantom, target_phantom);
 }
 
 } // namespace mld

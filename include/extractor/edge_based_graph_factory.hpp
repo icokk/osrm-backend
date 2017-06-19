@@ -21,6 +21,7 @@
 #include "util/guidance/entry_class.hpp"
 #include "util/name_table.hpp"
 #include "util/node_based_graph.hpp"
+#include "util/packed_vector.hpp"
 #include "util/typedefs.hpp"
 
 #include "storage/io.hpp"
@@ -72,7 +73,8 @@ class EdgeBasedGraphFactory
                                    const std::unordered_set<NodeID> &barrier_nodes,
                                    const std::unordered_set<NodeID> &traffic_lights,
                                    std::shared_ptr<const RestrictionMap> restriction_map,
-                                   const std::vector<QueryNode> &node_info_list,
+                                   const std::vector<util::Coordinate> &coordinates,
+                                   const util::PackedVector<OSMNodeID> &osm_node_ids,
                                    ProfileProperties profile_properties,
                                    const util::NameTable &name_table,
                                    std::vector<std::uint32_t> &turn_lane_offsets,
@@ -128,7 +130,8 @@ class EdgeBasedGraphFactory
     util::DeallocatingVector<EdgeBasedEdge> m_edge_based_edge_list;
     EdgeID m_max_edge_id;
 
-    const std::vector<QueryNode> &m_node_info_list;
+    const std::vector<util::Coordinate> &m_coordinates;
+    const util::PackedVector<OSMNodeID> &m_osm_node_ids;
     std::shared_ptr<util::NodeBasedDynamicGraph> m_node_based_graph;
     std::shared_ptr<RestrictionMap const> m_restriction_map;
 
@@ -155,9 +158,6 @@ class EdgeBasedGraphFactory
                                    const std::string &turn_penalties_index_filename);
 
     NBGToEBG InsertEdgeBasedNode(const NodeID u, const NodeID v);
-
-    void FlushVectorToStream(storage::io::FileWriter &edge_data_file,
-                             std::vector<OriginalEdgeData> &original_edge_data_vector) const;
 
     std::size_t restricted_turns_counter;
     std::size_t skipped_uturns_counter;

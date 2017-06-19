@@ -426,6 +426,20 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
         std::function<EdgeDistance()> provide_reverse_distance =
             std::bind(&GeospatialQuery::CalculateDistance<true>, this, data, ratio);
 
+        // check phantom node segments validity
+        auto areSegmentsValid = [](auto first, auto last) -> bool {
+            return std::find(first, last, INVALID_EDGE_WEIGHT) == last;
+        };
+        bool is_forward_valid_source =
+            areSegmentsValid(forward_weight_vector.begin(), forward_weight_vector.end());
+        bool is_forward_valid_target =
+            areSegmentsValid(forward_weight_vector.begin(),
+                             forward_weight_vector.begin() + data.fwd_segment_position + 1);
+        bool is_reverse_valid_source =
+            areSegmentsValid(reverse_weight_vector.begin(), reverse_weight_vector.end());
+        bool is_reverse_valid_target = areSegmentsValid(
+            reverse_weight_vector.begin(), reverse_weight_vector.end() - data.fwd_segment_position);
+
         auto transformed = PhantomNodeWithDistance{
             PhantomNode{data,
                         forward_weight,
@@ -436,6 +450,10 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
                         reverse_duration,
                         MAKE_PAYLOAD(provide_forward_duration, provide_forward_distance),
                         MAKE_PAYLOAD(provide_reverse_duration, provide_reverse_distance),
+                                                               is_forward_valid_source,
+                                                               is_forward_valid_target,
+                                                               is_reverse_valid_source,
+                                                               is_reverse_valid_target,
                         point_on_segment,
                         input_coordinate},
             current_perpendicular_distance};

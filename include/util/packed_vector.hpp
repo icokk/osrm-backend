@@ -1,8 +1,11 @@
 #ifndef PACKED_VECTOR_HPP
 #define PACKED_VECTOR_HPP
 
-#include "util/shared_memory_vector_wrapper.hpp"
 #include "util/typedefs.hpp"
+#include "util/vector_view.hpp"
+
+#include "storage/io_fwd.hpp"
+#include "storage/shared_memory_ownership.hpp"
 
 #include <cmath>
 #include <vector>
@@ -11,7 +14,22 @@ namespace osrm
 {
 namespace util
 {
+namespace detail
+{
+template <typename T, storage::Ownership Ownership> class PackedVector;
+}
 
+namespace serialization
+{
+template <typename T, storage::Ownership Ownership>
+inline void read(storage::io::FileReader &reader, detail::PackedVector<T, Ownership> &vec);
+
+template <typename T, storage::Ownership Ownership>
+inline void write(storage::io::FileWriter &writer, const detail::PackedVector<T, Ownership> &vec);
+}
+
+namespace detail
+{
 /**
  * Since OSM node IDs are (at the time of writing) not quite yet overflowing 32 bits, and
  * will predictably be containable within 33 bits for a long time, the following packs
@@ -20,13 +38,15 @@ namespace util
  * NOTE: this type is templated for future use, but will require a slight refactor to
  * configure BITSIZE and ELEMSIZE
  */
-template <typename T, bool UseSharedMemory = false> class PackedVector
+template <typename T, storage::Ownership Ownership> class PackedVector
 {
     static const constexpr std::size_t BITSIZE = 33;
     static const constexpr std::size_t ELEMSIZE = 64;
     static const constexpr std::size_t PACKSIZE = BITSIZE * ELEMSIZE;
 
   public:
+    using value_type = T;
+
     /**
      * Returns the size of the packed vector datastructure with `elements` packed elements (the size
      * of
@@ -77,7 +97,9 @@ template <typename T, bool UseSharedMemory = false> class PackedVector
         num_elements++;
     }
 
-    T at(const std::size_t &a_index) const
+    T operator[](const std::size_t index) const { return at(index); }
+
+    T at(const std::size_t a_index) const
     {
         BOOST_ASSERT(a_index < num_elements);
 
@@ -120,20 +142,20 @@ template <typename T, bool UseSharedMemory = false> class PackedVector
 
     std::size_t size() const { return num_elements; }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     void reserve(typename std::enable_if<!enabled, std::size_t>::type capacity)
     {
         vec.reserve(elements_to_blocks(capacity));
     }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     void reset(typename std::enable_if<enabled, std::uint64_t>::type *ptr,
                typename std::enable_if<enabled, std::size_t>::type size)
     {
         vec.reset(ptr, size);
     }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     void set_number_of_entries(typename std::enable_if<enabled, std::size_t>::type count)
     {
         num_elements = count;
@@ -144,50 +166,60 @@ template <typename T, bool UseSharedMemory = false> class PackedVector
         return std::floor(static_cast<double>(vec.capacity()) * ELEMSIZE / BITSIZE);
     }
 
-  private:
-    typename util::ShM<std::uint64_t, UseSharedMemory>::vector vec;
+    friend void serialization::read<T, Ownership>(storage::io::FileReader &reader,
+                                                  detail::PackedVector<T, Ownership> &vec);
 
-    std::size_t num_elements = 0;
+    friend void serialization::write<T, Ownership>(storage::io::FileWriter &writer,
+                                                   const detail::PackedVector<T, Ownership> &vec);
+
+  private:
+    util::ViewOrVector<std::uint64_t, Ownership> vec;
+
+    std::uint64_t num_elements = 0;
 
     signed cursor = -1;
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     void replace_last_elem(typename std::enable_if<enabled, std::uint64_t>::type last_elem)
     {
         vec[cursor] = last_elem;
     }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     void replace_last_elem(typename std::enable_if<!enabled, std::uint64_t>::type last_elem)
     {
         vec.back() = last_elem;
     }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     void add_last_elem(typename std::enable_if<enabled, std::uint64_t>::type last_elem)
     {
         vec[cursor + 1] = last_elem;
         cursor++;
     }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     void add_last_elem(typename std::enable_if<!enabled, std::uint64_t>::type last_elem)
     {
         vec.push_back(last_elem);
     }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     std::uint64_t vec_back(typename std::enable_if<enabled>::type * = nullptr)
     {
         return vec[cursor];
     }
 
-    template <bool enabled = UseSharedMemory>
+    template <bool enabled = (Ownership == storage::Ownership::View)>
     std::uint64_t vec_back(typename std::enable_if<!enabled>::type * = nullptr)
     {
         return vec.back();
     }
 };
+}
+
+template <typename T> using PackedVector = detail::PackedVector<T, storage::Ownership::Container>;
+template <typename T> using PackedVectorView = detail::PackedVector<T, storage::Ownership::View>;
 }
 }
 

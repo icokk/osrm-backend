@@ -43,7 +43,8 @@ class RoutingAlgorithmsInterface
     MapMatching(const routing_algorithms::CandidateLists &candidates_list,
                 const std::vector<util::Coordinate> &trace_coordinates,
                 const std::vector<unsigned> &trace_timestamps,
-                const std::vector<boost::optional<double>> &trace_gps_precision) const = 0;
+                const std::vector<boost::optional<double>> &trace_gps_precision,
+                const bool allow_splitting) const = 0;
 
     virtual std::vector<routing_algorithms::TurnData>
     GetTileTurns(const std::vector<datafacade::BaseDataFacade::RTreeLeaf> &edges,
@@ -58,11 +59,11 @@ class RoutingAlgorithmsInterface
 };
 
 // Short-lived object passed to each plugin in request to wrap routing algorithms
-template <typename AlgorithmT> class RoutingAlgorithms final : public RoutingAlgorithmsInterface
+template <typename Algorithm> class RoutingAlgorithms final : public RoutingAlgorithmsInterface
 {
   public:
-    RoutingAlgorithms(SearchEngineData &heaps,
-                      const datafacade::ContiguousInternalMemoryDataFacade<AlgorithmT> &facade)
+    RoutingAlgorithms(SearchEngineData<Algorithm> &heaps,
+                      const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade)
         : heaps(heaps), facade(facade)
     {
     }
@@ -93,7 +94,8 @@ template <typename AlgorithmT> class RoutingAlgorithms final : public RoutingAlg
         const routing_algorithms::CandidateLists &candidates_list,
         const std::vector<util::Coordinate> &trace_coordinates,
         const std::vector<unsigned> &trace_timestamps,
-        const std::vector<boost::optional<double>> &trace_gps_precision) const final override;
+                const std::vector<boost::optional<double>> &trace_gps_precision,
+                const bool allow_splitting) const final override;
 
     std::vector<routing_algorithms::TurnData>
     GetTileTurns(const std::vector<datafacade::BaseDataFacade::RTreeLeaf> &edges,
@@ -101,49 +103,50 @@ template <typename AlgorithmT> class RoutingAlgorithms final : public RoutingAlg
 
     bool HasAlternativePathSearch() const final override
     {
-        return algorithm_trais::HasAlternativePathSearch<AlgorithmT>::value;
+        return routing_algorithms::HasAlternativePathSearch<Algorithm>::value;
     }
 
     bool HasShortestPathSearch() const final override
     {
-        return algorithm_trais::HasShortestPathSearch<AlgorithmT>::value;
+        return routing_algorithms::HasShortestPathSearch<Algorithm>::value;
     }
 
     bool HasDirectShortestPathSearch() const final override
     {
-        return algorithm_trais::HasDirectShortestPathSearch<AlgorithmT>::value;
+        return routing_algorithms::HasDirectShortestPathSearch<Algorithm>::value;
     }
 
     bool HasMapMatching() const final override
     {
-        return algorithm_trais::HasMapMatching<AlgorithmT>::value;
+        return routing_algorithms::HasMapMatching<Algorithm>::value;
     }
 
     bool HasManyToManySearch() const final override
     {
-        return algorithm_trais::HasManyToManySearch<AlgorithmT>::value;
+        return routing_algorithms::HasManyToManySearch<Algorithm>::value;
     }
 
     bool HasGetTileTurns() const final override
     {
-        return algorithm_trais::HasGetTileTurns<AlgorithmT>::value;
+        return routing_algorithms::HasGetTileTurns<Algorithm>::value;
     }
 
   private:
-    SearchEngineData &heaps;
+    SearchEngineData<Algorithm> &heaps;
+
     // Owned by shared-ptr passed to the query
-    const datafacade::ContiguousInternalMemoryDataFacade<AlgorithmT> &facade;
+    const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade;
 };
 
-template <typename AlgorithmT>
+template <typename Algorithm>
 InternalRouteResult
-RoutingAlgorithms<AlgorithmT>::AlternativePathSearch(const PhantomNodes &phantom_node_pair) const
+RoutingAlgorithms<Algorithm>::AlternativePathSearch(const PhantomNodes &phantom_node_pair) const
 {
-    return routing_algorithms::alternativePathSearch(heaps, facade, phantom_node_pair);
+    return routing_algorithms::ch::alternativePathSearch(heaps, facade, phantom_node_pair);
 }
 
-template <typename AlgorithmT>
-InternalRouteResult RoutingAlgorithms<AlgorithmT>::ShortestPathSearch(
+template <typename Algorithm>
+InternalRouteResult RoutingAlgorithms<Algorithm>::ShortestPathSearch(
     const std::vector<PhantomNodes> &phantom_node_pair,
     const boost::optional<bool> continue_straight_at_waypoint) const
 {
@@ -151,9 +154,9 @@ InternalRouteResult RoutingAlgorithms<AlgorithmT>::ShortestPathSearch(
         heaps, facade, phantom_node_pair, continue_straight_at_waypoint);
 }
 
-template <typename AlgorithmT>
+template <typename Algorithm>
 InternalRouteResult
-RoutingAlgorithms<AlgorithmT>::DirectShortestPathSearch(const PhantomNodes &phantom_nodes) const
+RoutingAlgorithms<Algorithm>::DirectShortestPathSearch(const PhantomNodes &phantom_nodes) const
 {
     return routing_algorithms::directShortestPathSearch(heaps, facade, phantom_nodes);
 }
@@ -164,7 +167,7 @@ std::vector<RoutingPayload> RoutingAlgorithms<AlgorithmT>::ManyToManySearch(
     const std::vector<std::size_t> &source_indices,
     const std::vector<std::size_t> &target_indices) const
 {
-    return routing_algorithms::manyToManySearch(
+    return routing_algorithms::ch::manyToManySearch(
         heaps, facade, phantom_nodes, source_indices, target_indices);
 }
 
@@ -189,39 +192,57 @@ inline routing_algorithms::SubMatchingList RoutingAlgorithms<AlgorithmT>::MapMat
     const routing_algorithms::CandidateLists &candidates_list,
     const std::vector<util::Coordinate> &trace_coordinates,
     const std::vector<unsigned> &trace_timestamps,
-    const std::vector<boost::optional<double>> &trace_gps_precision) const
+    const std::vector<boost::optional<double>> &trace_gps_precision,
+    const bool allow_splitting) const
 {
-    return routing_algorithms::mapMatching(
-        heaps, facade, candidates_list, trace_coordinates, trace_timestamps, trace_gps_precision);
+    return routing_algorithms::mapMatching(heaps,
+                                           facade,
+                                           candidates_list,
+                                           trace_coordinates,
+                                           trace_timestamps,
+                                           trace_gps_precision,
+                                           allow_splitting);
 }
 
-template <typename AlgorithmT>
-inline std::vector<routing_algorithms::TurnData> RoutingAlgorithms<AlgorithmT>::GetTileTurns(
+template <typename Algorithm>
+inline std::vector<routing_algorithms::TurnData> RoutingAlgorithms<Algorithm>::GetTileTurns(
     const std::vector<datafacade::BaseDataFacade::RTreeLeaf> &edges,
     const std::vector<std::size_t> &sorted_edge_indexes) const
 {
     return routing_algorithms::getTileTurns(facade, edges, sorted_edge_indexes);
 }
 
+// CoreCH overrides
+template <>
+InternalRouteResult inline RoutingAlgorithms<
+    routing_algorithms::corech::Algorithm>::AlternativePathSearch(const PhantomNodes &) const
+{
+    throw util::exception("AlternativePathSearch is disabled due to performance reasons");
+}
+
+template <>
+inline std::vector<EdgeWeight>
+RoutingAlgorithms<routing_algorithms::corech::Algorithm>::ManyToManySearch(
+    const std::vector<PhantomNode> &,
+    const std::vector<std::size_t> &,
+    const std::vector<std::size_t> &) const
+{
+    throw util::exception("ManyToManySearch is disabled due to performance reasons");
+}
+
 // MLD overrides for not implemented
 template <>
-InternalRouteResult inline RoutingAlgorithms<algorithm::MLD>::AlternativePathSearch(
-    const PhantomNodes &) const
+inline std::vector<RoutingPayload>
+InternalRouteResult inline RoutingAlgorithms<
+    routing_algorithms::mld::Algorithm>::AlternativePathSearch(const PhantomNodes &) const
 {
     throw util::exception("AlternativePathSearch is not implemented");
 }
 
 template <>
-inline InternalRouteResult
-RoutingAlgorithms<algorithm::MLD>::ShortestPathSearch(const std::vector<PhantomNodes> &,
-                                                      const boost::optional<bool>) const
-{
-    throw util::exception("ShortestPathSearch is not implemented");
-}
-
-template <>
-inline std::vector<RoutingPayload>
-RoutingAlgorithms<algorithm::MLD>::ManyToManySearch(const std::vector<PhantomNode> &,
+inline std::vector<EdgeWeight>
+RoutingAlgorithms<routing_algorithms::mld::Algorithm>::ManyToManySearch(
+    const std::vector<PhantomNode> &,
                                                     const std::vector<std::size_t> &,
                                                     const std::vector<std::size_t> &) const
 {
@@ -248,7 +269,7 @@ RoutingAlgorithms<algorithm::MLD>::MapMatching(const routing_algorithms::Candida
 }
 
 template <>
-inline std::vector<routing_algorithms::TurnData> RoutingAlgorithms<algorithm::MLD>::GetTileTurns(
+inline std::vector<routing_algorithms::TurnData> RoutingAlgorithms<routing_algorithms::mld::Algorithm>::GetTileTurns(
     const std::vector<datafacade::BaseDataFacade::RTreeLeaf> &,
     const std::vector<std::size_t> &) const
 {

@@ -17,7 +17,7 @@ BOOST_AUTO_TEST_SUITE(route)
 
 BOOST_AUTO_TEST_CASE(test_route_same_coordinates_fixture)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -103,7 +103,7 @@ BOOST_AUTO_TEST_CASE(test_route_same_coordinates_fixture)
 
 BOOST_AUTO_TEST_CASE(test_route_same_coordinates)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -255,7 +255,7 @@ BOOST_AUTO_TEST_CASE(test_route_same_coordinates)
 
 BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_small_component)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -290,7 +290,7 @@ BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_small_component)
 
 BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_big_component)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -325,7 +325,7 @@ BOOST_AUTO_TEST_CASE(test_route_response_for_locations_in_big_component)
 
 BOOST_AUTO_TEST_CASE(test_route_response_for_locations_across_components)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -362,7 +362,7 @@ BOOST_AUTO_TEST_CASE(test_route_response_for_locations_across_components)
 
 BOOST_AUTO_TEST_CASE(test_route_user_disables_generating_hints)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -382,7 +382,7 @@ BOOST_AUTO_TEST_CASE(test_route_user_disables_generating_hints)
 
 BOOST_AUTO_TEST_CASE(speed_annotation_matches_duration_and_distance)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 
@@ -416,7 +416,7 @@ BOOST_AUTO_TEST_CASE(speed_annotation_matches_duration_and_distance)
 
 BOOST_AUTO_TEST_CASE(test_manual_setting_of_annotations_property)
 {
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     using namespace osrm;
 

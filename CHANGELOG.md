@@ -1,11 +1,61 @@
+# 5.7.4
+  - Changes from 5.7.3:
+   - Bug fixes:
+     - Fixes 4100: Fix steps collapsing after non-closed roundabouts
+     - Fixes 4129: Fix invalid roundabout instructions for different driving modes
+
+# 5.7.3
+  - Changes from 5.7.2:
+   - Bug fixes:
+     - Fixes 4097: .ramIndex files was able to be truncated siliently
+
+# 5.7.2
+  - Changes from 5.7.1:
+   - Bug fixes:
+    - Fixes segmentation fault caused by the fix for 3977
+
+# 5.7.1
+  - Changes from 5.7.0:
+    - Bug fixes:
+     - Fixes 3995: Negative duration caused by rounding issues.
+     - Fixes 3977: Fixes exit number in roundabout if starting inside the roundabout
+     - Fixes 3981: The NodeJS documentation was outdated and incomplete.
+     - Fixes 4010: Performance regression while parsing CSV files. Now 5x faster.
+     - Fixes 3919: Turn penalties on the cyclabilty metric were disabled.
+     - Fixes 3992: Table plugin not checking for valid phantom nodes
+     - Fixes 4013: `continue_straight` interaction with bearing constraints
+     - Fixes 4063: Potential overflow in custom profiles for restricted ways
+     - Fixes 4030: Roundabout edge-case crashes post-processing
+
 # 5.7.0
   - Changes from 5.6
+    - Bug fixes:
+      - Fixed 505: Invalid distance value for distance as routing weight.
+      - Fixed 3958: Fix traffic light penalties for non-turns
+      - Fixed 3933: crash when collapsing instructions
+    - Algorithm:
+      - OSRM object has new option `algorithm` that allows the selection of a routing algorithm.
+      - New experimental algorithm: Multi-Level Dijkstra with new toolchain:
+        - Allows for fast metric updates in below a minute on continental sized networks (osrm-customize)
+        - Plugins supported: `match` and `route`
+        - Quickstart: `osrm-extract data.osm.pbf`, `osrm-partition data.osrm`, `osrm-customize data.osrm`, `osrm-routed --algorithm=MLD data.osrm`
+    - NodeJs Bindings
+      - Merged https://github.com/Project-OSRM/node-osrm into repository. Build via `cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_NODE_BINDINGS=On -DENABLE_MASON=On`.
+      - `OSRM` object has new option `algorihtm="CH","CoreCH","MLD"`
     - Internals
       - Shared memory notification via conditional variables on Linux or semaphore queue on OS X and Windows with a limit of 128 OSRM Engine instances
     - Files
       - .osrm.datasource_index file was removed. Data is now part of .osrm.geometries.
       - .osrm.edge_lookup was removed. The option `--generate-edge-lookup` does nothing now.
       - `osrm-contract` does not depend on the `.osrm.fileIndex` file anymore
+      - `osrm-extract` creates new file `.osrm.cnbg` and `.cnbg_to_ebg`
+      - `osrm-partition` creates new file `.osrm.partition` and `.osrm.cells`
+      - `osrm-customize` creates new file `.osrm.mldgr`
+    - Profiles
+      - Added `force_split_edges` flag to global properties. True value guarantees that segment_function will be called for all segments, but also could double memory consumption
+    - Map Matching:
+      - new option `gaps=split|ignore` to enable/disbale track splitting
+      - new option `tidy=true|false` to simplify traces automatically
 
 # 5.6.3
   - Changes from 5.6.0

@@ -35,7 +35,9 @@ namespace TurnLaneType = guidance::TurnLaneType;
 
 ExtractorCallbacks::ExtractorCallbacks(ExtractionContainers &extraction_containers_,
                                        const ProfileProperties &properties)
-    : external_memory(extraction_containers_), fallback_to_duration(properties.fallback_to_duration)
+    : external_memory(extraction_containers_),
+      fallback_to_duration(properties.fallback_to_duration),
+      force_split_edges(properties.force_split_edges)
 {
     // we reserved 0, 1, 2, 3 for the empty case
     string_map[MapKey("", "", "", "")] = 0;
@@ -323,14 +325,15 @@ void ExtractorCallbacks::ProcessWay(const osmium::Way &input_way, const Extracti
         (parsed_way.backward_travel_mode != TRAVEL_MODE_INACCESSIBLE);
 
     // split an edge into two edges if forwards/backwards behavior differ
-    const bool split_edge = in_forward_direction && in_backward_direction &&
-                            ((parsed_way.forward_rate != parsed_way.backward_rate) ||
-                             (parsed_way.forward_speed != parsed_way.backward_speed) ||
-                             (parsed_way.forward_travel_mode != parsed_way.backward_travel_mode) ||
-                             (turn_lane_id_forward != turn_lane_id_backward));
+    const bool split_edge =
+        in_forward_direction && in_backward_direction &&
+        (force_split_edges || (parsed_way.forward_rate != parsed_way.backward_rate) ||
+         (parsed_way.forward_speed != parsed_way.backward_speed) ||
+         (parsed_way.forward_travel_mode != parsed_way.backward_travel_mode) ||
+         (turn_lane_id_forward != turn_lane_id_backward));
 
     if (in_forward_direction)
-    {
+    { // add (forward) segments or (forward,backward) for non-split edges in backward direction
         util::for_each_pair(
             nodes.cbegin(),
             nodes.cend(),
@@ -355,8 +358,8 @@ void ExtractorCallbacks::ProcessWay(const osmium::Way &input_way, const Extracti
             });
     }
 
-    if (in_backward_direction || split_edge)
-    {
+    if (in_backward_direction && (!in_forward_direction || split_edge))
+    { // add (backward) segments for split edges or not in forward direction
         util::for_each_pair(
             nodes.cbegin(),
             nodes.cend(),

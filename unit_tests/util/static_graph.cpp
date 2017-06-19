@@ -23,6 +23,8 @@ typedef TestStaticGraph::NodeArrayEntry TestNodeArrayEntry;
 typedef TestStaticGraph::EdgeArrayEntry TestEdgeArrayEntry;
 typedef static_graph_details::SortableEdgeWithData<TestData> TestInputEdge;
 
+static_assert(traits::HasDataMember<TestInputEdge>::value, "TestInputEdge needs to have data");
+
 constexpr unsigned TEST_NUM_NODES = 100;
 constexpr unsigned TEST_NUM_EDGES = 500;
 // Chosen by a fair W20 dice roll (this value is completely arbitrary)
@@ -68,8 +70,8 @@ template <unsigned NUM_NODES, unsigned NUM_EDGES> struct RandomArrayEntryFixture
         std::shuffle(order.begin(), order.end(), g);
     }
 
-    typename ShM<TestNodeArrayEntry, false>::vector nodes;
-    typename ShM<TestEdgeArrayEntry, false>::vector edges;
+    std::vector<TestNodeArrayEntry> nodes;
+    std::vector<TestEdgeArrayEntry> edges;
     std::vector<unsigned> lengths;
     std::vector<unsigned> order;
 };

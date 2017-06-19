@@ -282,6 +282,8 @@ In addition to the [general options](#general-options) the following options are
 |overview    |`simplified` (default), `full`, `false`         |Add overview geometry either full, simplified according to highest zoom level it could be display on, or not at all.|
 |timestamps  |`{timestamp};{timestamp}[;{timestamp} ...]`     |Timestamps for the input locations in seconds since UNIX epoch. Timestamps need to be monotonically increasing. |
 |radiuses    |`{radius};{radius}[;{radius} ...]`              |Standard deviation of GPS precision used for map matching. If applicable use GPS accuracy.|
+|gaps        |`split` (default), `ignore`                     |Allows the input track splitting based on huge timestamp gaps between points.             |
+|tidy        |`true`, `false` (default)                       |Allows the input track modification to obtain better matching quality for noisy tracks.   |
 
 |Parameter   |Values                             |
 |------------|-----------------------------------|
@@ -317,7 +319,7 @@ All other properties might be undefined.
 
 The trip plugin solves the Traveling Salesman Problem using a greedy heuristic (farthest-insertion algorithm) for 10 or more waypoints and uses brute force for less than 10 waypoints.
 The returned path does not have to be the fastest path. As TSP is NP-hard it only returns an approximation.
-Note that all input coordinates have to be connected for the trip service to work. 
+Note that all input coordinates have to be connected for the trip service to work.
 
 ```endpoint
 GET /trip/v1/{profile}/{coordinates}?roundtrip={true|false}&source{any|first}&destination{any|last}&steps={true|false}&geometries={polyline|polyline6|geojson}&overview={simplified|full|false}&annotations={true|false}'
@@ -337,7 +339,7 @@ In addition to the [general options](#general-options) the following options are
 
 **Fixing Start and End Points**
 
-It is possible to explicitely set the start or end coordinate of the trip. 
+It is possible to explicitely set the start or end coordinate of the trip.
 When source is set to `first`, the first coordinate is used as start coordinate of the trip in the output. When destination is set to `last`, the last coordinate will be used as destination of the trip in the returned output. If you specify `any`, any of the coordinates can be used as the first or last coordinate in the output.
 
 However, if `source=any&destination=any` the returned round-trip will still start at the first input coordinate by default.
@@ -347,7 +349,7 @@ Right now, the following combinations are possible:
 
 | roundtrip | source | destination | supported |
 | :-- | :-- | :-- | :-- |
-| true | first | last | **yes** | 
+| true | first | last | **yes** |
 | true | first | any | **yes** |
 | true | any | last | **yes** |
 | true | any | any | **yes** |

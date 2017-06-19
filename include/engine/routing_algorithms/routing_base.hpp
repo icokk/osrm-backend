@@ -38,56 +38,48 @@ static constexpr bool FORWARD_DIRECTION = true;
 static constexpr bool REVERSE_DIRECTION = false;
 static constexpr bool DO_NOT_FORCE_LOOPS = false;
 
-template <bool DIRECTION, typename Heap>
-void insertNodesInHeap(Heap &heap, const PhantomNode &phantom_node)
-{
-    BOOST_ASSERT(phantom_node.IsValid());
+bool needsLoopForward(const PhantomNode &source_phantom, const PhantomNode &target_phantom);
 
-    const auto weight_sign = DIRECTION == FORWARD_DIRECTION ? -1 : 1;
-    if (phantom_node.forward_segment_id.enabled)
-    {
-        heap.Insert(phantom_node.forward_segment_id.id,
-                    weight_sign * phantom_node.GetForwardWeightPlusOffset(),
-                    phantom_node.forward_segment_id.id);
-    }
-    if (phantom_node.reverse_segment_id.enabled)
-    {
-        heap.Insert(phantom_node.reverse_segment_id.id,
-                    weight_sign * phantom_node.GetReverseWeightPlusOffset(),
-                    phantom_node.reverse_segment_id.id);
-    }
-}
+bool needsLoopBackwards(const PhantomNode &source_phantom, const PhantomNode &target_phantom);
 
-template <bool DIRECTION>
-void insertNodesInHeap(SearchEngineData::ManyToManyQueryHeap &heap, const PhantomNode &phantom_node)
-{
-    BOOST_ASSERT(phantom_node.IsValid());
+void insertSourceInHeap(SearchEngineData<ch::Algorithm>::ManyToManyQueryHeap &heap,
+                        const PhantomNode &phantom_node);
 
-    const bool forward = DIRECTION == FORWARD_DIRECTION;
-    const auto weight_sign = forward ? -1 : 1;
-    if (phantom_node.forward_segment_id.enabled)
-    {
-        heap.Insert(
-            phantom_node.forward_segment_id.id,
-            weight_sign * phantom_node.GetForwardWeightPlusOffset(),
-            {phantom_node.forward_segment_id.id,
-             forward ? -phantom_node.GetForwardPayload() : phantom_node.GetForwardPayload()});
-    }
-    if (phantom_node.reverse_segment_id.enabled)
-    {
-        heap.Insert(
-            phantom_node.reverse_segment_id.id,
-            weight_sign * phantom_node.GetReverseWeightPlusOffset(),
-            {phantom_node.reverse_segment_id.id,
-             forward ? -phantom_node.GetReversePayload() : phantom_node.GetReversePayload()});
-    }
-}
+void insertTargetInHeap(SearchEngineData<ch::Algorithm>::ManyToManyQueryHeap &heap,
+                        const PhantomNode &phantom_node);
 
 template <typename Heap>
 void insertNodesInHeaps(Heap &forward_heap, Heap &reverse_heap, const PhantomNodes &nodes)
 {
-    insertNodesInHeap<FORWARD_DIRECTION>(forward_heap, nodes.source_phantom);
-    insertNodesInHeap<REVERSE_DIRECTION>(reverse_heap, nodes.target_phantom);
+    const auto &source = nodes.source_phantom;
+    if (source.IsValidForwardSource())
+    {
+        forward_heap.Insert(source.forward_segment_id.id,
+                            -source.GetForwardWeightPlusOffset(),
+                            source.forward_segment_id.id);
+    }
+
+    if (source.IsValidReverseSource())
+    {
+        forward_heap.Insert(source.reverse_segment_id.id,
+                            -source.GetReverseWeightPlusOffset(),
+                            source.reverse_segment_id.id);
+    }
+
+    const auto &target = nodes.target_phantom;
+    if (target.IsValidForwardTarget())
+    {
+        reverse_heap.Insert(target.forward_segment_id.id,
+                            target.GetForwardWeightPlusOffset(),
+                            target.forward_segment_id.id);
+    }
+
+    if (target.IsValidReverseTarget())
+    {
+        reverse_heap.Insert(target.reverse_segment_id.id,
+                            target.GetReverseWeightPlusOffset(),
+                            target.reverse_segment_id.id);
+    }
 }
 
 template <typename FacadeT>
@@ -173,7 +165,7 @@ void annotatePath(const FacadeT &facade,
                                              util::guidance::TurnBearing(0)});
         }
         BOOST_ASSERT(unpacked_path.size() > 0);
-        if (facade.hasLaneData(turn_id))
+        if (facade.HasLaneData(turn_id))
             unpacked_path.back().lane_data = facade.GetLaneData(turn_id);
 
         unpacked_path.back().entry_classid = facade.GetEntryClassID(turn_id);
@@ -307,6 +299,57 @@ void annotatePath(const FacadeT &facade,
         }
         BOOST_ASSERT(!unpacked_path.empty());
     }
+}
+
+template <typename Algorithm>
+double getPathDistance(const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                       const std::vector<PathData> unpacked_path,
+                       const PhantomNode &source_phantom,
+                       const PhantomNode &target_phantom)
+{
+    using util::coordinate_calculation::detail::DEGREE_TO_RAD;
+    using util::coordinate_calculation::detail::EARTH_RADIUS;
+
+    double distance = 0;
+    double prev_lat = static_cast<double>(toFloating(source_phantom.location.lat)) * DEGREE_TO_RAD;
+    double prev_lon = static_cast<double>(toFloating(source_phantom.location.lon)) * DEGREE_TO_RAD;
+    double prev_cos = std::cos(prev_lat);
+    for (const auto &p : unpacked_path)
+    {
+        const auto current_coordinate = facade.GetCoordinateOfNode(p.turn_via_node);
+
+        const double current_lat =
+            static_cast<double>(toFloating(current_coordinate.lat)) * DEGREE_TO_RAD;
+        const double current_lon =
+            static_cast<double>(toFloating(current_coordinate.lon)) * DEGREE_TO_RAD;
+        const double current_cos = std::cos(current_lat);
+
+        const double sin_dlon = std::sin((prev_lon - current_lon) / 2.0);
+        const double sin_dlat = std::sin((prev_lat - current_lat) / 2.0);
+
+        const double aharv = sin_dlat * sin_dlat + prev_cos * current_cos * sin_dlon * sin_dlon;
+        const double charv = 2. * std::atan2(std::sqrt(aharv), std::sqrt(1.0 - aharv));
+        distance += EARTH_RADIUS * charv;
+
+        prev_lat = current_lat;
+        prev_lon = current_lon;
+        prev_cos = current_cos;
+    }
+
+    const double current_lat =
+        static_cast<double>(toFloating(target_phantom.location.lat)) * DEGREE_TO_RAD;
+    const double current_lon =
+        static_cast<double>(toFloating(target_phantom.location.lon)) * DEGREE_TO_RAD;
+    const double current_cos = std::cos(current_lat);
+
+    const double sin_dlon = std::sin((prev_lon - current_lon) / 2.0);
+    const double sin_dlat = std::sin((prev_lat - current_lat) / 2.0);
+
+    const double aharv = sin_dlat * sin_dlat + prev_cos * current_cos * sin_dlon * sin_dlon;
+    const double charv = 2. * std::atan2(std::sqrt(aharv), std::sqrt(1.0 - aharv));
+    distance += EARTH_RADIUS * charv;
+
+    return distance;
 }
 
 } // namespace routing_algorithms

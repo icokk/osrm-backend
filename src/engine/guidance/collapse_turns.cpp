@@ -53,7 +53,7 @@ double findTotalTurnAngle(const RouteStep &entry_step, const RouteStep &exit_ste
     // both angles are in the same direction, the total turn gets increased
     // 
     // a ---- b
-    //           \
+    //           \ 
     //              c
     //              |
     //              d
@@ -73,9 +73,6 @@ double findTotalTurnAngle(const RouteStep &entry_step, const RouteStep &exit_ste
         // entry step is short and the exit and the exit step does not have intersections??
         if (entry_step.distance < MAX_COLLAPSE_DISTANCE)
             return true;
-
-        if (entry_step.distance > 2 * MAX_COLLAPSE_DISTANCE)
-            return false;
 
         // both go roughly in the same direction
         if ((entry_angle <= 185 && exit_angle <= 185) || (entry_angle >= 175 && exit_angle >= 175))
@@ -318,11 +315,6 @@ RouteSteps collapseTurnInstructions(RouteSteps steps)
         if (entersRoundabout(current_step->maneuver.instruction) ||
             staysOnRoundabout(current_step->maneuver.instruction))
         {
-            // Skip over all instructions within the roundabout
-            for (; current_step + 1 != steps.end(); ++current_step)
-                if (leavesRoundabout(current_step->maneuver.instruction))
-                    break;
-
             // are we done for good?
             if (current_step + 1 == steps.end())
                 break;

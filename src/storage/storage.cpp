@@ -1,35 +1,43 @@
 #include "storage/storage.hpp"
-#include "contractor/query_edge.hpp"
+
+#include "storage/io.hpp"
+#include "storage/shared_datatype.hpp"
+#include "storage/shared_memory.hpp"
+#include "storage/shared_memory_ownership.hpp"
+#include "storage/shared_monitor.hpp"
+
+#include "contractor/files.hpp"
+#include "contractor/query_graph.hpp"
+
 #include "customizer/edge_based_graph.hpp"
+
 #include "extractor/compressed_edge_container.hpp"
 #include "extractor/edge_based_edge.hpp"
+#include "extractor/files.hpp"
 #include "extractor/guidance/turn_instruction.hpp"
-#include "extractor/io.hpp"
 #include "extractor/original_edge_data.hpp"
 #include "extractor/profile_properties.hpp"
 #include "extractor/query_node.hpp"
 #include "extractor/travel_mode.hpp"
+
 #include "partition/cell_storage.hpp"
 #include "partition/edge_based_graph_reader.hpp"
+#include "partition/files.hpp"
 #include "partition/multi_level_partition.hpp"
-#include "storage/io.hpp"
-#include "storage/serialization.hpp"
-#include "storage/shared_datatype.hpp"
-#include "storage/shared_memory.hpp"
-#include "storage/shared_monitor.hpp"
+
 #include "engine/datafacade/datafacade_base.hpp"
+
 #include "util/coordinate.hpp"
 #include "util/exception.hpp"
 #include "util/exception_utils.hpp"
 #include "util/fingerprint.hpp"
-#include "util/io.hpp"
 #include "util/log.hpp"
 #include "util/packed_vector.hpp"
 #include "util/range_table.hpp"
-#include "util/shared_memory_vector_wrapper.hpp"
 #include "util/static_graph.hpp"
 #include "util/static_rtree.hpp"
 #include "util/typedefs.hpp"
+#include "util/vector_view.hpp"
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -55,8 +63,7 @@ namespace storage
 {
 
 using RTreeLeaf = engine::datafacade::BaseDataFacade::RTreeLeaf;
-using RTreeNode =
-    util::StaticRTree<RTreeLeaf, util::ShM<util::Coordinate, true>::vector, true>::TreeNode;
+using RTreeNode = util::StaticRTree<RTreeLeaf, storage::Ownership::View>::TreeNode;
 using QueryGraph = util::StaticGraph<contractor::QueryEdge::EdgeData>;
 using EdgeBasedGraph = util::StaticGraph<extractor::EdgeBasedEdge::EdgeData>;
 
@@ -211,15 +218,13 @@ void Storage::PopulateLayout(DataLayout &layout)
     }
 
     {
-        std::vector<std::uint32_t> lane_description_offsets;
-        std::vector<extractor::guidance::TurnLaneType::Mask> lane_description_masks;
-        util::deserializeAdjacencyArray(config.turn_lane_description_path.string(),
-                                        lane_description_offsets,
-                                        lane_description_masks);
-        layout.SetBlockSize<std::uint32_t>(DataLayout::LANE_DESCRIPTION_OFFSETS,
-                                           lane_description_offsets.size());
+        io::FileReader reader(config.turn_lane_description_path, io::FileReader::HasNoFingerprint);
+        auto num_offsets = reader.ReadVectorSize<std::uint32_t>();
+        auto num_masks = reader.ReadVectorSize<extractor::guidance::TurnLaneType::Mask>();
+
+        layout.SetBlockSize<std::uint32_t>(DataLayout::LANE_DESCRIPTION_OFFSETS, num_offsets);
         layout.SetBlockSize<extractor::guidance::TurnLaneType::Mask>(
-            DataLayout::LANE_DESCRIPTION_MASKS, lane_description_masks.size());
+            DataLayout::LANE_DESCRIPTION_MASKS, num_masks);
     }
 
     // Loading information for original edges
@@ -244,20 +249,25 @@ void Storage::PopulateLayout(DataLayout &layout)
 
     if (boost::filesystem::exists(config.hsgr_data_path))
     {
-        io::FileReader hsgr_file(config.hsgr_data_path, io::FileReader::VerifyFingerprint);
+        io::FileReader reader(config.hsgr_data_path, io::FileReader::VerifyFingerprint);
 
-        const auto hsgr_header = serialization::readHSGRHeader(hsgr_file);
+        reader.Skip<std::uint32_t>(1); // checksum
+        auto num_nodes = reader.ReadVectorSize<contractor::QueryGraph::NodeArrayEntry>();
+        auto num_edges = reader.ReadVectorSize<contractor::QueryGraph::EdgeArrayEntry>();
+
         layout.SetBlockSize<unsigned>(DataLayout::HSGR_CHECKSUM, 1);
-        layout.SetBlockSize<QueryGraph::NodeArrayEntry>(DataLayout::CH_GRAPH_NODE_LIST,
-                                                        hsgr_header.number_of_nodes);
-        layout.SetBlockSize<QueryGraph::EdgeArrayEntry>(DataLayout::CH_GRAPH_EDGE_LIST,
-                                                        hsgr_header.number_of_edges);
+        layout.SetBlockSize<contractor::QueryGraph::NodeArrayEntry>(DataLayout::CH_GRAPH_NODE_LIST,
+                                                                    num_nodes);
+        layout.SetBlockSize<contractor::QueryGraph::EdgeArrayEntry>(DataLayout::CH_GRAPH_EDGE_LIST,
+                                                                    num_edges);
     }
     else
     {
         layout.SetBlockSize<unsigned>(DataLayout::HSGR_CHECKSUM, 0);
-        layout.SetBlockSize<QueryGraph::NodeArrayEntry>(DataLayout::CH_GRAPH_NODE_LIST, 0);
-        layout.SetBlockSize<QueryGraph::EdgeArrayEntry>(DataLayout::CH_GRAPH_EDGE_LIST, 0);
+        layout.SetBlockSize<contractor::QueryGraph::NodeArrayEntry>(DataLayout::CH_GRAPH_NODE_LIST,
+                                                                    0);
+        layout.SetBlockSize<contractor::QueryGraph::EdgeArrayEntry>(DataLayout::CH_GRAPH_EDGE_LIST,
+                                                                    0);
     }
 
     // load rsearch tree size
@@ -269,9 +279,7 @@ void Storage::PopulateLayout(DataLayout &layout)
     }
 
     {
-        // allocate space in shared memory for profile properties
-        const auto properties_size = serialization::readPropertiesCount();
-        layout.SetBlockSize<extractor::ProfileProperties>(DataLayout::PROPERTIES, properties_size);
+        layout.SetBlockSize<extractor::ProfileProperties>(DataLayout::PROPERTIES, 1);
     }
 
     // read timestampsize
@@ -311,26 +319,24 @@ void Storage::PopulateLayout(DataLayout &layout)
 
     // load coordinate size
     {
-        io::FileReader node_file(config.nodes_data_path, io::FileReader::HasNoFingerprint);
+        io::FileReader node_file(config.nodes_data_path, io::FileReader::VerifyFingerprint);
         const auto coordinate_list_size = node_file.ReadElementCount64();
         layout.SetBlockSize<util::Coordinate>(DataLayout::COORDINATE_LIST, coordinate_list_size);
         // we'll read a list of OSM node IDs from the same data, so set the block size for the same
         // number of items:
         layout.SetBlockSize<std::uint64_t>(
             DataLayout::OSM_NODE_ID_LIST,
-            util::PackedVector<OSMNodeID>::elements_to_blocks(coordinate_list_size));
+            util::PackedVectorView<OSMNodeID>::elements_to_blocks(coordinate_list_size));
     }
 
     // load geometries sizes
     {
-        io::FileReader geometry_file(config.geometries_path, io::FileReader::HasNoFingerprint);
+        io::FileReader reader(config.geometries_path, io::FileReader::HasNoFingerprint);
 
-        const auto number_of_geometries_indices = geometry_file.ReadElementCount32();
+        const auto number_of_geometries_indices = reader.ReadVectorSize<unsigned>();
         layout.SetBlockSize<unsigned>(DataLayout::GEOMETRIES_INDEX, number_of_geometries_indices);
 
-        geometry_file.Skip<unsigned>(number_of_geometries_indices);
-
-        const auto number_of_compressed_geometries = geometry_file.ReadElementCount32();
+        const auto number_of_compressed_geometries = reader.ReadVectorSize<NodeID>();
         layout.SetBlockSize<NodeID>(DataLayout::GEOMETRIES_NODE_LIST,
                                     number_of_compressed_geometries);
         layout.SetBlockSize<EdgeWeight>(DataLayout::GEOMETRIES_FWD_WEIGHT_LIST,
@@ -355,7 +361,7 @@ void Storage::PopulateLayout(DataLayout &layout)
                                          io::FileReader::VerifyFingerprint);
 
         std::vector<BearingClassID> bearing_class_id_table;
-        intersection_file.DeserializeVector(bearing_class_id_table);
+        serialization::read(intersection_file, bearing_class_id_table);
 
         layout.SetBlockSize<BearingClassID>(DataLayout::BEARING_CLASSID,
                                             bearing_class_id_table.size());
@@ -364,12 +370,13 @@ void Storage::PopulateLayout(DataLayout &layout)
         intersection_file.Skip<std::uint32_t>(1); // sum_lengths
 
         layout.SetBlockSize<unsigned>(DataLayout::BEARING_OFFSETS, bearing_blocks);
-        layout.SetBlockSize<typename util::RangeTable<16, true>::BlockT>(DataLayout::BEARING_BLOCKS,
-                                                                         bearing_blocks);
+        layout.SetBlockSize<typename util::RangeTable<16, storage::Ownership::View>::BlockT>(
+            DataLayout::BEARING_BLOCKS, bearing_blocks);
 
         // No need to read the data
         intersection_file.Skip<unsigned>(bearing_blocks);
-        intersection_file.Skip<typename util::RangeTable<16, true>::BlockT>(bearing_blocks);
+        intersection_file.Skip<typename util::RangeTable<16, storage::Ownership::View>::BlockT>(
+            bearing_blocks);
 
         const auto num_bearings = intersection_file.ReadElementCount64();
 
@@ -379,7 +386,7 @@ void Storage::PopulateLayout(DataLayout &layout)
         layout.SetBlockSize<DiscreteBearing>(DataLayout::BEARING_VALUES, num_bearings);
 
         std::vector<util::guidance::EntryClass> entry_class_table;
-        intersection_file.DeserializeVector(entry_class_table);
+        serialization::read(intersection_file, entry_class_table);
 
         layout.SetBlockSize<util::guidance::EntryClass>(DataLayout::ENTRY_CLASS,
                                                         entry_class_table.size());
@@ -447,21 +454,27 @@ void Storage::PopulateLayout(DataLayout &layout)
             io::FileReader reader(config.mld_graph_path, io::FileReader::VerifyFingerprint);
 
             const auto num_nodes =
-                reader.ReadVectorSize<customizer::StaticEdgeBasedGraph::NodeArrayEntry>();
+                reader.ReadVectorSize<customizer::MultiLevelEdgeBasedGraph::NodeArrayEntry>();
             const auto num_edges =
-                reader.ReadVectorSize<customizer::StaticEdgeBasedGraph::EdgeArrayEntry>();
+                reader.ReadVectorSize<customizer::MultiLevelEdgeBasedGraph::EdgeArrayEntry>();
+            const auto num_node_offsets =
+                reader.ReadVectorSize<customizer::MultiLevelEdgeBasedGraph::EdgeOffset>();
 
-            layout.SetBlockSize<customizer::StaticEdgeBasedGraph::NodeArrayEntry>(
+            layout.SetBlockSize<customizer::MultiLevelEdgeBasedGraph::NodeArrayEntry>(
                 DataLayout::MLD_GRAPH_NODE_LIST, num_nodes);
-            layout.SetBlockSize<customizer::StaticEdgeBasedGraph::EdgeArrayEntry>(
+            layout.SetBlockSize<customizer::MultiLevelEdgeBasedGraph::EdgeArrayEntry>(
                 DataLayout::MLD_GRAPH_EDGE_LIST, num_edges);
+            layout.SetBlockSize<customizer::MultiLevelEdgeBasedGraph::EdgeOffset>(
+                DataLayout::MLD_GRAPH_NODE_TO_OFFSET, num_node_offsets);
         }
         else
         {
-            layout.SetBlockSize<customizer::StaticEdgeBasedGraph::NodeArrayEntry>(
+            layout.SetBlockSize<customizer::MultiLevelEdgeBasedGraph::NodeArrayEntry>(
                 DataLayout::MLD_GRAPH_NODE_LIST, 0);
-            layout.SetBlockSize<customizer::StaticEdgeBasedGraph::EdgeArrayEntry>(
+            layout.SetBlockSize<customizer::MultiLevelEdgeBasedGraph::EdgeArrayEntry>(
                 DataLayout::MLD_GRAPH_EDGE_LIST, 0);
+            layout.SetBlockSize<customizer::MultiLevelEdgeBasedGraph::EdgeOffset>(
+                DataLayout::MLD_GRAPH_NODE_TO_OFFSET, 0);
         }
     }
 }
@@ -475,35 +488,27 @@ void Storage::PopulateData(const DataLayout &layout, char *memory_ptr)
     // Load the HSGR file
     if (boost::filesystem::exists(config.hsgr_data_path))
     {
-        io::FileReader hsgr_file(config.hsgr_data_path, io::FileReader::VerifyFingerprint);
-        auto hsgr_header = serialization::readHSGRHeader(hsgr_file);
-        unsigned *checksum_ptr =
-            layout.GetBlockPtr<unsigned, true>(memory_ptr, DataLayout::HSGR_CHECKSUM);
-        *checksum_ptr = hsgr_header.checksum;
+        auto graph_nodes_ptr = layout.GetBlockPtr<contractor::QueryGraphView::NodeArrayEntry, true>(
+            memory_ptr, storage::DataLayout::CH_GRAPH_NODE_LIST);
+        auto graph_edges_ptr = layout.GetBlockPtr<contractor::QueryGraphView::EdgeArrayEntry, true>(
+            memory_ptr, storage::DataLayout::CH_GRAPH_EDGE_LIST);
+        auto checksum = layout.GetBlockPtr<unsigned, true>(memory_ptr, DataLayout::HSGR_CHECKSUM);
 
-        // load the nodes of the search graph
-        QueryGraph::NodeArrayEntry *graph_node_list_ptr =
-            layout.GetBlockPtr<QueryGraph::NodeArrayEntry, true>(memory_ptr,
-                                                                 DataLayout::CH_GRAPH_NODE_LIST);
+        util::vector_view<contractor::QueryGraphView::NodeArrayEntry> node_list(
+            graph_nodes_ptr, layout.num_entries[storage::DataLayout::CH_GRAPH_NODE_LIST]);
+        util::vector_view<contractor::QueryGraphView::EdgeArrayEntry> edge_list(
+            graph_edges_ptr, layout.num_entries[storage::DataLayout::CH_GRAPH_EDGE_LIST]);
 
-        // load the edges of the search graph
-        QueryGraph::EdgeArrayEntry *graph_edge_list_ptr =
-            layout.GetBlockPtr<QueryGraph::EdgeArrayEntry, true>(memory_ptr,
-                                                                 DataLayout::CH_GRAPH_EDGE_LIST);
-
-        serialization::readHSGR(hsgr_file,
-                                graph_node_list_ptr,
-                                hsgr_header.number_of_nodes,
-                                graph_edge_list_ptr,
-                                hsgr_header.number_of_edges);
+        contractor::QueryGraphView graph_view(std::move(node_list), std::move(edge_list));
+        contractor::files::readGraph(config.hsgr_data_path, *checksum, graph_view);
     }
     else
     {
         layout.GetBlockPtr<unsigned, true>(memory_ptr, DataLayout::HSGR_CHECKSUM);
-        layout.GetBlockPtr<QueryGraph::NodeArrayEntry, true>(memory_ptr,
-                                                             DataLayout::CH_GRAPH_NODE_LIST);
-        layout.GetBlockPtr<QueryGraph::EdgeArrayEntry, true>(memory_ptr,
-                                                             DataLayout::CH_GRAPH_EDGE_LIST);
+        layout.GetBlockPtr<contractor::QueryGraphView::NodeArrayEntry, true>(
+            memory_ptr, DataLayout::CH_GRAPH_NODE_LIST);
+        layout.GetBlockPtr<contractor::QueryGraphView::EdgeArrayEntry, true>(
+            memory_ptr, DataLayout::CH_GRAPH_EDGE_LIST);
     }
 
     // store the filename of the on-disk portion of the RTree
@@ -551,151 +556,146 @@ void Storage::PopulateData(const DataLayout &layout, char *memory_ptr)
 
     // Turn lane descriptions
     {
-        std::vector<std::uint32_t> lane_description_offsets;
-        std::vector<extractor::guidance::TurnLaneType::Mask> lane_description_masks;
-        util::deserializeAdjacencyArray(config.turn_lane_description_path.string(),
-                                        lane_description_offsets,
-                                        lane_description_masks);
+        auto offsets_ptr = layout.GetBlockPtr<std::uint32_t, true>(
+            memory_ptr, storage::DataLayout::LANE_DESCRIPTION_OFFSETS);
+        util::vector_view<std::uint32_t> offsets(
+            offsets_ptr, layout.num_entries[storage::DataLayout::LANE_DESCRIPTION_OFFSETS]);
 
-        const auto turn_lane_offset_ptr = layout.GetBlockPtr<std::uint32_t, true>(
-            memory_ptr, DataLayout::LANE_DESCRIPTION_OFFSETS);
-        if (!lane_description_offsets.empty())
-        {
-            BOOST_ASSERT(
-                static_cast<std::size_t>(
-                    layout.GetBlockSize(DataLayout::LANE_DESCRIPTION_OFFSETS)) >=
-                std::distance(lane_description_offsets.begin(), lane_description_offsets.end()) *
-                    sizeof(decltype(lane_description_offsets)::value_type));
-            std::copy(lane_description_offsets.begin(),
-                      lane_description_offsets.end(),
-                      turn_lane_offset_ptr);
-        }
+        auto masks_ptr = layout.GetBlockPtr<extractor::guidance::TurnLaneType::Mask, true>(
+            memory_ptr, storage::DataLayout::LANE_DESCRIPTION_MASKS);
+        util::vector_view<extractor::guidance::TurnLaneType::Mask> masks(
+            masks_ptr, layout.num_entries[storage::DataLayout::LANE_DESCRIPTION_MASKS]);
 
-        const auto turn_lane_mask_ptr =
-            layout.GetBlockPtr<extractor::guidance::TurnLaneType::Mask, true>(
-                memory_ptr, DataLayout::LANE_DESCRIPTION_MASKS);
-        if (!lane_description_masks.empty())
-        {
-            BOOST_ASSERT(
-                static_cast<std::size_t>(layout.GetBlockSize(DataLayout::LANE_DESCRIPTION_MASKS)) >=
-                std::distance(lane_description_masks.begin(), lane_description_masks.end()) *
-                    sizeof(decltype(lane_description_masks)::value_type));
-            std::copy(
-                lane_description_masks.begin(), lane_description_masks.end(), turn_lane_mask_ptr);
-        }
+        extractor::files::readTurnLaneDescriptions(
+            config.turn_lane_description_path, offsets, masks);
     }
 
     // Load original edge data
     {
-        io::FileReader edges_input_file(config.edges_data_path, io::FileReader::HasNoFingerprint);
+        auto via_geometry_list_ptr =
+            layout.GetBlockPtr<GeometryID, true>(memory_ptr, storage::DataLayout::VIA_NODE_LIST);
+        util::vector_view<GeometryID> geometry_ids(
+            via_geometry_list_ptr, layout.num_entries[storage::DataLayout::VIA_NODE_LIST]);
 
-        const auto number_of_original_edges = edges_input_file.ReadElementCount64();
-
-        const auto via_geometry_ptr =
-            layout.GetBlockPtr<GeometryID, true>(memory_ptr, DataLayout::VIA_NODE_LIST);
-
-        const auto name_id_ptr =
-            layout.GetBlockPtr<unsigned, true>(memory_ptr, DataLayout::NAME_ID_LIST);
-
-        const auto travel_mode_ptr =
-            layout.GetBlockPtr<extractor::TravelMode, true>(memory_ptr, DataLayout::TRAVEL_MODE);
-        const auto pre_turn_bearing_ptr = layout.GetBlockPtr<util::guidance::TurnBearing, true>(
-            memory_ptr, DataLayout::PRE_TURN_BEARING);
-        const auto post_turn_bearing_ptr = layout.GetBlockPtr<util::guidance::TurnBearing, true>(
-            memory_ptr, DataLayout::POST_TURN_BEARING);
+        const auto travel_mode_list_ptr = layout.GetBlockPtr<extractor::TravelMode, true>(
+            memory_ptr, storage::DataLayout::TRAVEL_MODE);
+        util::vector_view<extractor::TravelMode> travel_modes(
+            travel_mode_list_ptr, layout.num_entries[storage::DataLayout::TRAVEL_MODE]);
 
         const auto lane_data_id_ptr =
-            layout.GetBlockPtr<LaneDataID, true>(memory_ptr, DataLayout::LANE_DATA_ID);
+            layout.GetBlockPtr<LaneDataID, true>(memory_ptr, storage::DataLayout::LANE_DATA_ID);
+        util::vector_view<LaneDataID> lane_data_ids(
+            lane_data_id_ptr, layout.num_entries[storage::DataLayout::LANE_DATA_ID]);
 
-        const auto turn_instructions_ptr =
+        const auto turn_instruction_list_ptr =
             layout.GetBlockPtr<extractor::guidance::TurnInstruction, true>(
-                memory_ptr, DataLayout::TURN_INSTRUCTION);
+                memory_ptr, storage::DataLayout::TURN_INSTRUCTION);
+        util::vector_view<extractor::guidance::TurnInstruction> turn_instructions(
+            turn_instruction_list_ptr, layout.num_entries[storage::DataLayout::TURN_INSTRUCTION]);
 
-        const auto entry_class_id_ptr =
-            layout.GetBlockPtr<EntryClassID, true>(memory_ptr, DataLayout::ENTRY_CLASSID);
+        const auto name_id_list_ptr =
+            layout.GetBlockPtr<NameID, true>(memory_ptr, storage::DataLayout::NAME_ID_LIST);
+        util::vector_view<NameID> name_ids(name_id_list_ptr,
+                                           layout.num_entries[storage::DataLayout::NAME_ID_LIST]);
 
-        serialization::readEdges(edges_input_file,
-                                 via_geometry_ptr,
-                                 name_id_ptr,
-                                 turn_instructions_ptr,
-                                 lane_data_id_ptr,
-                                 travel_mode_ptr,
-                                 entry_class_id_ptr,
-                                 pre_turn_bearing_ptr,
-                                 post_turn_bearing_ptr,
-                                 number_of_original_edges);
+        const auto entry_class_id_list_ptr =
+            layout.GetBlockPtr<EntryClassID, true>(memory_ptr, storage::DataLayout::ENTRY_CLASSID);
+        util::vector_view<EntryClassID> entry_class_ids(
+            entry_class_id_list_ptr, layout.num_entries[storage::DataLayout::ENTRY_CLASSID]);
+
+        const auto pre_turn_bearing_ptr = layout.GetBlockPtr<util::guidance::TurnBearing, true>(
+            memory_ptr, storage::DataLayout::PRE_TURN_BEARING);
+        util::vector_view<util::guidance::TurnBearing> pre_turn_bearings(
+            pre_turn_bearing_ptr, layout.num_entries[storage::DataLayout::PRE_TURN_BEARING]);
+
+        const auto post_turn_bearing_ptr = layout.GetBlockPtr<util::guidance::TurnBearing, true>(
+            memory_ptr, storage::DataLayout::POST_TURN_BEARING);
+        util::vector_view<util::guidance::TurnBearing> post_turn_bearings(
+            post_turn_bearing_ptr, layout.num_entries[storage::DataLayout::POST_TURN_BEARING]);
+
+        extractor::TurnDataView turn_data(std::move(geometry_ids),
+                                          std::move(name_ids),
+                                          std::move(turn_instructions),
+                                          std::move(lane_data_ids),
+                                          std::move(travel_modes),
+                                          std::move(entry_class_ids),
+                                          std::move(pre_turn_bearings),
+                                          std::move(post_turn_bearings));
+
+        extractor::files::readTurnData(config.edges_data_path, turn_data);
     }
 
     // load compressed geometry
     {
-        io::FileReader geometry_input_file(config.geometries_path,
-                                           io::FileReader::HasNoFingerprint);
+        auto geometries_index_ptr =
+            layout.GetBlockPtr<unsigned, true>(memory_ptr, storage::DataLayout::GEOMETRIES_INDEX);
+        util::vector_view<unsigned> geometry_begin_indices(
+            geometries_index_ptr, layout.num_entries[storage::DataLayout::GEOMETRIES_INDEX]);
 
-        const auto geometry_index_count = geometry_input_file.ReadElementCount32();
-        const auto geometries_index_ptr =
-            layout.GetBlockPtr<unsigned, true>(memory_ptr, DataLayout::GEOMETRIES_INDEX);
-        BOOST_ASSERT(geometry_index_count == layout.num_entries[DataLayout::GEOMETRIES_INDEX]);
-        geometry_input_file.ReadInto(geometries_index_ptr, geometry_index_count);
+        auto geometries_node_list_ptr =
+            layout.GetBlockPtr<NodeID, true>(memory_ptr, storage::DataLayout::GEOMETRIES_NODE_LIST);
+        util::vector_view<NodeID> geometry_node_list(
+            geometries_node_list_ptr,
+            layout.num_entries[storage::DataLayout::GEOMETRIES_NODE_LIST]);
 
-        const auto geometries_node_id_list_ptr =
-            layout.GetBlockPtr<NodeID, true>(memory_ptr, DataLayout::GEOMETRIES_NODE_LIST);
-        const auto geometry_node_lists_count = geometry_input_file.ReadElementCount32();
-        BOOST_ASSERT(geometry_node_lists_count ==
-                     layout.num_entries[DataLayout::GEOMETRIES_NODE_LIST]);
-        geometry_input_file.ReadInto(geometries_node_id_list_ptr, geometry_node_lists_count);
+        auto geometries_fwd_weight_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
+            memory_ptr, storage::DataLayout::GEOMETRIES_FWD_WEIGHT_LIST);
+        util::vector_view<EdgeWeight> geometry_fwd_weight_list(
+            geometries_fwd_weight_list_ptr,
+            layout.num_entries[storage::DataLayout::GEOMETRIES_FWD_WEIGHT_LIST]);
 
-        const auto geometries_fwd_weight_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
-            memory_ptr, DataLayout::GEOMETRIES_FWD_WEIGHT_LIST);
-        BOOST_ASSERT(geometry_node_lists_count ==
-                     layout.num_entries[DataLayout::GEOMETRIES_FWD_WEIGHT_LIST]);
-        geometry_input_file.ReadInto(geometries_fwd_weight_list_ptr, geometry_node_lists_count);
+        auto geometries_rev_weight_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
+            memory_ptr, storage::DataLayout::GEOMETRIES_REV_WEIGHT_LIST);
+        util::vector_view<EdgeWeight> geometry_rev_weight_list(
+            geometries_rev_weight_list_ptr,
+            layout.num_entries[storage::DataLayout::GEOMETRIES_REV_WEIGHT_LIST]);
 
-        const auto geometries_rev_weight_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
-            memory_ptr, DataLayout::GEOMETRIES_REV_WEIGHT_LIST);
-        BOOST_ASSERT(geometry_node_lists_count ==
-                     layout.num_entries[DataLayout::GEOMETRIES_REV_WEIGHT_LIST]);
-        geometry_input_file.ReadInto(geometries_rev_weight_list_ptr, geometry_node_lists_count);
+        auto geometries_fwd_duration_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
+            memory_ptr, storage::DataLayout::GEOMETRIES_FWD_DURATION_LIST);
+        util::vector_view<EdgeWeight> geometry_fwd_duration_list(
+            geometries_fwd_duration_list_ptr,
+            layout.num_entries[storage::DataLayout::GEOMETRIES_FWD_DURATION_LIST]);
 
-        const auto geometries_fwd_duration_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
-            memory_ptr, DataLayout::GEOMETRIES_FWD_DURATION_LIST);
-        BOOST_ASSERT(geometry_node_lists_count ==
-                     layout.num_entries[DataLayout::GEOMETRIES_FWD_DURATION_LIST]);
-        geometry_input_file.ReadInto(geometries_fwd_duration_list_ptr, geometry_node_lists_count);
+        auto geometries_rev_duration_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
+            memory_ptr, storage::DataLayout::GEOMETRIES_REV_DURATION_LIST);
+        util::vector_view<EdgeWeight> geometry_rev_duration_list(
+            geometries_rev_duration_list_ptr,
+            layout.num_entries[storage::DataLayout::GEOMETRIES_REV_DURATION_LIST]);
 
-        const auto geometries_rev_duration_list_ptr = layout.GetBlockPtr<EdgeWeight, true>(
-            memory_ptr, DataLayout::GEOMETRIES_REV_DURATION_LIST);
-        BOOST_ASSERT(geometry_node_lists_count ==
-                     layout.num_entries[DataLayout::GEOMETRIES_REV_DURATION_LIST]);
-        geometry_input_file.ReadInto(geometries_rev_duration_list_ptr, geometry_node_lists_count);
+        auto datasources_list_ptr = layout.GetBlockPtr<DatasourceID, true>(
+            memory_ptr, storage::DataLayout::DATASOURCES_LIST);
+        util::vector_view<DatasourceID> datasources_list(
+            datasources_list_ptr, layout.num_entries[storage::DataLayout::DATASOURCES_LIST]);
 
-        const auto datasource_list_ptr =
-            layout.GetBlockPtr<DatasourceID, true>(memory_ptr, DataLayout::DATASOURCES_LIST);
-        BOOST_ASSERT(geometry_node_lists_count == layout.num_entries[DataLayout::DATASOURCES_LIST]);
-        geometry_input_file.ReadInto(datasource_list_ptr, geometry_node_lists_count);
+        extractor::SegmentDataView segment_data{std::move(geometry_begin_indices),
+                                                std::move(geometry_node_list),
+                                                std::move(geometry_fwd_weight_list),
+                                                std::move(geometry_rev_weight_list),
+                                                std::move(geometry_fwd_duration_list),
+                                                std::move(geometry_rev_duration_list),
+                                                std::move(datasources_list)};
+
+        extractor::files::readSegmentData(config.geometries_path, segment_data);
     }
 
     {
         const auto datasources_names_ptr = layout.GetBlockPtr<extractor::Datasources, true>(
             memory_ptr, DataLayout::DATASOURCES_NAMES);
-        extractor::io::read(config.datasource_names_path, *datasources_names_ptr);
+        extractor::files::readDatasources(config.datasource_names_path, *datasources_names_ptr);
     }
 
     // Loading list of coordinates
     {
-        io::FileReader nodes_file(config.nodes_data_path, io::FileReader::HasNoFingerprint);
-        nodes_file.Skip<std::uint64_t>(1); // node_count
         const auto coordinates_ptr =
             layout.GetBlockPtr<util::Coordinate, true>(memory_ptr, DataLayout::COORDINATE_LIST);
         const auto osmnodeid_ptr =
             layout.GetBlockPtr<std::uint64_t, true>(memory_ptr, DataLayout::OSM_NODE_ID_LIST);
-        util::PackedVector<OSMNodeID, true> osmnodeid_list;
+        util::vector_view<util::Coordinate> coordinates(
+            coordinates_ptr, layout.num_entries[DataLayout::COORDINATE_LIST]);
+        util::PackedVectorView<OSMNodeID> osm_node_ids;
+        osm_node_ids.reset(osmnodeid_ptr, layout.num_entries[DataLayout::OSM_NODE_ID_LIST]);
 
-        osmnodeid_list.reset(osmnodeid_ptr, layout.num_entries[DataLayout::OSM_NODE_ID_LIST]);
-
-        serialization::readNodes(nodes_file,
-                                 coordinates_ptr,
-                                 osmnodeid_list,
-                                 layout.num_entries[DataLayout::COORDINATE_LIST]);
+        extractor::files::readNodes(config.nodes_data_path, coordinates, osm_node_ids);
     }
 
     // load turn weight penalties
@@ -791,14 +791,14 @@ void Storage::PopulateData(const DataLayout &layout, char *memory_ptr)
                                          io::FileReader::VerifyFingerprint);
 
         std::vector<BearingClassID> bearing_class_id_table;
-        intersection_file.DeserializeVector(bearing_class_id_table);
+        serialization::read(intersection_file, bearing_class_id_table);
 
         const auto bearing_blocks = intersection_file.ReadElementCount32();
         intersection_file.Skip<std::uint32_t>(1); // sum_lengths
 
         std::vector<unsigned> bearing_offsets_data(bearing_blocks);
-        std::vector<typename util::RangeTable<16, true>::BlockT> bearing_blocks_data(
-            bearing_blocks);
+        std::vector<typename util::RangeTable<16, storage::Ownership::View>::BlockT>
+            bearing_blocks_data(bearing_blocks);
 
         intersection_file.ReadInto(bearing_offsets_data.data(), bearing_blocks);
         intersection_file.ReadInto(bearing_blocks_data.data(), bearing_blocks);
@@ -809,7 +809,7 @@ void Storage::PopulateData(const DataLayout &layout, char *memory_ptr)
         intersection_file.ReadInto(bearing_class_table.data(), num_bearings);
 
         std::vector<util::guidance::EntryClass> entry_class_table;
-        intersection_file.DeserializeVector(entry_class_table);
+        serialization::read(intersection_file, entry_class_table);
 
         // load intersection classes
         if (!bearing_class_id_table.empty())
@@ -838,8 +838,8 @@ void Storage::PopulateData(const DataLayout &layout, char *memory_ptr)
         if (layout.GetBlockSize(DataLayout::BEARING_BLOCKS) > 0)
         {
             const auto bearing_blocks_ptr =
-                layout.GetBlockPtr<typename util::RangeTable<16, true>::BlockT, true>(
-                    memory_ptr, DataLayout::BEARING_BLOCKS);
+                layout.GetBlockPtr<typename util::RangeTable<16, storage::Ownership::View>::BlockT,
+                                   true>(memory_ptr, DataLayout::BEARING_BLOCKS);
             BOOST_ASSERT(
                 static_cast<std::size_t>(layout.GetBlockSize(DataLayout::BEARING_BLOCKS)) >=
                 std::distance(bearing_blocks_data.begin(), bearing_blocks_data.end()) *
@@ -873,81 +873,99 @@ void Storage::PopulateData(const DataLayout &layout, char *memory_ptr)
         // Loading MLD Data
         if (boost::filesystem::exists(config.mld_partition_path))
         {
-            auto mld_level_data_ptr =
-                layout.GetBlockPtr<partition::MultiLevelPartition::LevelData, true>(
-                    memory_ptr, DataLayout::MLD_LEVEL_DATA);
-            auto mld_partition_ptr =
-                layout.GetBlockPtr<PartitionID, true>(memory_ptr, DataLayout::MLD_PARTITION);
-            auto mld_chilren_ptr =
-                layout.GetBlockPtr<CellID, true>(memory_ptr, DataLayout::MLD_CELL_TO_CHILDREN);
+            BOOST_ASSERT(layout.GetBlockSize(storage::DataLayout::MLD_LEVEL_DATA) > 0);
+            BOOST_ASSERT(layout.GetBlockSize(storage::DataLayout::MLD_CELL_TO_CHILDREN) > 0);
+            BOOST_ASSERT(layout.GetBlockSize(storage::DataLayout::MLD_PARTITION) > 0);
 
-            io::FileReader reader(config.mld_partition_path, io::FileReader::VerifyFingerprint);
+            auto level_data =
+                layout.GetBlockPtr<partition::MultiLevelPartitionView::LevelData, true>(
+                    memory_ptr, storage::DataLayout::MLD_LEVEL_DATA);
 
-            reader.ReadInto(mld_level_data_ptr, 1);
+            auto mld_partition_ptr = layout.GetBlockPtr<PartitionID, true>(
+                memory_ptr, storage::DataLayout::MLD_PARTITION);
+            auto partition_entries_count =
+                layout.GetBlockEntries(storage::DataLayout::MLD_PARTITION);
+            util::vector_view<PartitionID> partition(mld_partition_ptr, partition_entries_count);
 
-            std::uint64_t size;
+            auto mld_chilren_ptr = layout.GetBlockPtr<CellID, true>(
+                memory_ptr, storage::DataLayout::MLD_CELL_TO_CHILDREN);
+            auto children_entries_count =
+                layout.GetBlockEntries(storage::DataLayout::MLD_CELL_TO_CHILDREN);
+            util::vector_view<CellID> cell_to_children(mld_chilren_ptr, children_entries_count);
 
-            reader.ReadInto(size);
-            BOOST_ASSERT(size == layout.GetBlockEntries(DataLayout::MLD_PARTITION));
-            reader.ReadInto(mld_partition_ptr, size);
-
-            reader.ReadInto(size);
-            BOOST_ASSERT(size == layout.GetBlockEntries(DataLayout::MLD_CELL_TO_CHILDREN));
-            reader.ReadInto(mld_chilren_ptr, size);
+            partition::MultiLevelPartitionView mlp{
+                std::move(level_data), std::move(partition), std::move(cell_to_children)};
+            partition::files::readPartition(config.mld_partition_path, mlp);
         }
 
         if (boost::filesystem::exists(config.mld_storage_path))
         {
-            io::FileReader reader(config.mld_storage_path, io::FileReader::VerifyFingerprint);
-            auto mld_cell_weights_ptr =
-                layout.GetBlockPtr<EdgeWeight, true>(memory_ptr, DataLayout::MLD_CELL_WEIGHTS);
-            auto mld_source_boundary_ptr =
-                layout.GetBlockPtr<NodeID, true>(memory_ptr, DataLayout::MLD_CELL_SOURCE_BOUNDARY);
+            BOOST_ASSERT(layout.GetBlockSize(storage::DataLayout::MLD_CELLS) > 0);
+            BOOST_ASSERT(layout.GetBlockSize(storage::DataLayout::MLD_CELL_LEVEL_OFFSETS) > 0);
+
+            auto mld_cell_weights_ptr = layout.GetBlockPtr<EdgeWeight, true>(
+                memory_ptr, storage::DataLayout::MLD_CELL_WEIGHTS);
+            auto mld_source_boundary_ptr = layout.GetBlockPtr<NodeID, true>(
+                memory_ptr, storage::DataLayout::MLD_CELL_SOURCE_BOUNDARY);
             auto mld_destination_boundary_ptr = layout.GetBlockPtr<NodeID, true>(
-                memory_ptr, DataLayout::MLD_CELL_DESTINATION_BOUNDARY);
-            auto mld_cells_ptr = layout.GetBlockPtr<partition::CellStorage::CellData, true>(
-                memory_ptr, DataLayout::MLD_CELLS);
+                memory_ptr, storage::DataLayout::MLD_CELL_DESTINATION_BOUNDARY);
+            auto mld_cells_ptr = layout.GetBlockPtr<partition::CellStorageView::CellData, true>(
+                memory_ptr, storage::DataLayout::MLD_CELLS);
             auto mld_cell_level_offsets_ptr = layout.GetBlockPtr<std::uint64_t, true>(
-                memory_ptr, DataLayout::MLD_CELL_LEVEL_OFFSETS);
+                memory_ptr, storage::DataLayout::MLD_CELL_LEVEL_OFFSETS);
 
-            std::uint64_t size;
+            auto weight_entries_count =
+                layout.GetBlockEntries(storage::DataLayout::MLD_CELL_WEIGHTS);
+            auto source_boundary_entries_count =
+                layout.GetBlockEntries(storage::DataLayout::MLD_CELL_SOURCE_BOUNDARY);
+            auto destination_boundary_entries_count =
+                layout.GetBlockEntries(storage::DataLayout::MLD_CELL_DESTINATION_BOUNDARY);
+            auto cells_entries_counts = layout.GetBlockEntries(storage::DataLayout::MLD_CELLS);
+            auto cell_level_offsets_entries_count =
+                layout.GetBlockEntries(storage::DataLayout::MLD_CELL_LEVEL_OFFSETS);
 
-            reader.ReadInto(size);
-            BOOST_ASSERT(size == layout.GetBlockEntries(DataLayout::MLD_CELL_WEIGHTS));
-            reader.ReadInto(mld_cell_weights_ptr, size);
+            util::vector_view<EdgeWeight> weights(mld_cell_weights_ptr, weight_entries_count);
+            util::vector_view<NodeID> source_boundary(mld_source_boundary_ptr,
+                                                      source_boundary_entries_count);
+            util::vector_view<NodeID> destination_boundary(mld_destination_boundary_ptr,
+                                                           destination_boundary_entries_count);
+            util::vector_view<partition::CellStorageView::CellData> cells(mld_cells_ptr,
+                                                                          cells_entries_counts);
+            util::vector_view<std::uint64_t> level_offsets(mld_cell_level_offsets_ptr,
+                                                           cell_level_offsets_entries_count);
 
-            reader.ReadInto(size);
-            BOOST_ASSERT(size == layout.GetBlockEntries(DataLayout::MLD_CELL_SOURCE_BOUNDARY));
-            reader.ReadInto(mld_source_boundary_ptr, size);
-
-            reader.ReadInto(size);
-            BOOST_ASSERT(size == layout.GetBlockEntries(DataLayout::MLD_CELL_DESTINATION_BOUNDARY));
-            reader.ReadInto(mld_destination_boundary_ptr, size);
-
-            reader.ReadInto(size);
-            BOOST_ASSERT(size == layout.GetBlockEntries(DataLayout::MLD_CELLS));
-            reader.ReadInto(mld_cells_ptr, size);
-
-            reader.ReadInto(size);
-            BOOST_ASSERT(size == layout.GetBlockEntries(DataLayout::MLD_CELL_LEVEL_OFFSETS));
-            reader.ReadInto(mld_cell_level_offsets_ptr, size);
+            partition::CellStorageView storage{std::move(weights),
+                                               std::move(source_boundary),
+                                               std::move(destination_boundary),
+                                               std::move(cells),
+                                               std::move(level_offsets)};
+            partition::files::readCells(config.mld_storage_path, storage);
         }
 
         if (boost::filesystem::exists(config.mld_graph_path))
         {
-            io::FileReader reader(config.mld_graph_path, io::FileReader::VerifyFingerprint);
 
-            auto nodes_ptr =
-                layout.GetBlockPtr<customizer::StaticEdgeBasedGraph::NodeArrayEntry, true>(
-                    memory_ptr, DataLayout::MLD_GRAPH_NODE_LIST);
-            auto edges_ptr =
-                layout.GetBlockPtr<customizer::StaticEdgeBasedGraph::EdgeArrayEntry, true>(
-                    memory_ptr, DataLayout::MLD_GRAPH_EDGE_LIST);
+            auto graph_nodes_ptr =
+                layout.GetBlockPtr<customizer::MultiLevelEdgeBasedGraphView::NodeArrayEntry, true>(
+                    memory_ptr, storage::DataLayout::MLD_GRAPH_NODE_LIST);
+            auto graph_edges_ptr =
+                layout.GetBlockPtr<customizer::MultiLevelEdgeBasedGraphView::EdgeArrayEntry, true>(
+                    memory_ptr, storage::DataLayout::MLD_GRAPH_EDGE_LIST);
+            auto graph_node_to_offset_ptr =
+                layout.GetBlockPtr<customizer::MultiLevelEdgeBasedGraphView::EdgeOffset, true>(
+                    memory_ptr, storage::DataLayout::MLD_GRAPH_NODE_TO_OFFSET);
 
-            auto num_nodes = reader.ReadElementCount64();
-            reader.ReadInto(nodes_ptr, num_nodes);
-            auto num_edges = reader.ReadElementCount64();
-            reader.ReadInto(edges_ptr, num_edges);
+            util::vector_view<customizer::MultiLevelEdgeBasedGraphView::NodeArrayEntry> node_list(
+                graph_nodes_ptr, layout.num_entries[storage::DataLayout::MLD_GRAPH_NODE_LIST]);
+            util::vector_view<customizer::MultiLevelEdgeBasedGraphView::EdgeArrayEntry> edge_list(
+                graph_edges_ptr, layout.num_entries[storage::DataLayout::MLD_GRAPH_EDGE_LIST]);
+            util::vector_view<customizer::MultiLevelEdgeBasedGraphView::EdgeOffset> node_to_offset(
+                graph_node_to_offset_ptr,
+                layout.num_entries[storage::DataLayout::MLD_GRAPH_NODE_TO_OFFSET]);
+
+            customizer::MultiLevelEdgeBasedGraphView graph_view(
+                std::move(node_list), std::move(edge_list), std::move(node_to_offset));
+            partition::files::readGraph(config.mld_graph_path, graph_view);
         }
     }
 }

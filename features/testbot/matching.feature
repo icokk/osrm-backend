@@ -4,7 +4,6 @@ Feature: Basic Map Matching
     Background:
         Given the profile "testbot"
         Given a grid size of 10 meters
-        Given the extract extra arguments "--generate-edge-lookup"
         Given the query options
             | geometries | geojson |
 
@@ -39,6 +38,84 @@ Feature: Basic Map Matching
         When I match I should get
             | trace | timestamps | matchings |
             | abcd  | 0 1 62 63  | ab,cd     |
+
+    Scenario: Testbot - Map matching with trace splitting suppression
+        Given the query options
+            | gaps | ignore |
+
+        Given the node map
+            """
+            a b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | abcd  | no     |
+
+        When I match I should get
+            | trace | timestamps | matchings |
+            | abcd  | 0 1 62 63  | abcd      |
+
+    Scenario: Testbot - Map matching with trace tidying. Clean case.
+        Given a grid size of 100 meters
+
+        Given the query options
+            | tidy | true |
+
+        Given the node map
+            """
+            a b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | abcd  | no     |
+
+        When I match I should get
+            | trace | timestamps | matchings |
+            | abcd | 0 10 20 30  | abcd      |
+
+    Scenario: Testbot - Map matching with trace tidying. Dirty case by ts.
+        Given a grid size of 100 meters
+
+        Given the query options
+            | tidy | true |
+
+        Given the node map
+            """
+            a b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | abcd  | no     |
+
+        When I match I should get
+            | trace | timestamps    | matchings |
+            | abacd | 0 10 12 20 30 | abcd      |
+
+    Scenario: Testbot - Map matching with trace tidying. Dirty case by dist.
+        Given a grid size of 8 meters
+
+        Given the query options
+            | tidy | true |
+
+        Given the node map
+            """
+            a q b c d
+                e
+            """
+
+        And the ways
+            | nodes | oneway |
+            | aqbcd | no     |
+
+        When I match I should get
+            | trace | matchings |
+            | abcbd | abbd      |
 
     Scenario: Testbot - Map matching with core factor
         Given the contract extra arguments "--core 0.8"
@@ -135,7 +212,7 @@ Feature: Basic Map Matching
 
         And the speed file
         """
-        1,2,36
+        1,2,36,10
         """
 
         And the contract extra arguments "--segment-speed-file {speeds_file}"
@@ -162,7 +239,7 @@ Feature: Basic Map Matching
 
         And the speed file
         """
-        1,2,36
+        1,2,36,10
         """
 
         And the contract extra arguments "--segment-speed-file {speeds_file}"

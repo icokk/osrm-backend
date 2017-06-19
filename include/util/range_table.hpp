@@ -2,8 +2,9 @@
 #define RANGE_TABLE_HPP
 
 #include "storage/io.hpp"
+#include "storage/shared_memory_ownership.hpp"
 #include "util/integer_range.hpp"
-#include "util/shared_memory_vector_wrapper.hpp"
+#include "util/vector_view.hpp"
 
 #include <array>
 #include <fstream>
@@ -18,13 +19,14 @@ namespace util
  * and otherwise the compiler gets confused.
  */
 
-template <unsigned BLOCK_SIZE = 16, bool USE_SHARED_MEMORY = false> class RangeTable;
+template <unsigned BLOCK_SIZE = 16, storage::Ownership Ownership = storage::Ownership::Container>
+class RangeTable;
 
-template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY>
-std::ostream &operator<<(std::ostream &out, const RangeTable<BLOCK_SIZE, USE_SHARED_MEMORY> &table);
+template <unsigned BLOCK_SIZE, storage::Ownership Ownership>
+std::ostream &operator<<(std::ostream &out, const RangeTable<BLOCK_SIZE, Ownership> &table);
 
-template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY>
-std::istream &operator>>(std::istream &in, RangeTable<BLOCK_SIZE, USE_SHARED_MEMORY> &table);
+template <unsigned BLOCK_SIZE, storage::Ownership Ownership>
+std::istream &operator>>(std::istream &in, RangeTable<BLOCK_SIZE, Ownership> &table);
 
 /**
  * Stores adjacent ranges in a compressed format.
@@ -35,12 +37,12 @@ std::istream &operator>>(std::istream &in, RangeTable<BLOCK_SIZE, USE_SHARED_MEM
  * But each block consists of an absolute value and BLOCK_SIZE differential values.
  * So the effective block size is sizeof(unsigned) + BLOCK_SIZE.
  */
-template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY> class RangeTable
+template <unsigned BLOCK_SIZE, storage::Ownership Ownership> class RangeTable
 {
   public:
     using BlockT = std::array<unsigned char, BLOCK_SIZE>;
-    using BlockContainerT = typename ShM<BlockT, USE_SHARED_MEMORY>::vector;
-    using OffsetContainerT = typename ShM<unsigned, USE_SHARED_MEMORY>::vector;
+    using BlockContainerT = util::ViewOrVector<BlockT, Ownership>;
+    using OffsetContainerT = util::ViewOrVector<unsigned, Ownership>;
     using RangeT = range<unsigned>;
 
     friend std::ostream &operator<<<>(std::ostream &out, const RangeTable &table);
@@ -139,7 +141,7 @@ template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY> class RangeTable
         sum_lengths = lengths_prefix_sum;
     }
 
-    void Write(osrm::storage::io::FileWriter &filewriter)
+    void Write(storage::io::FileWriter &filewriter)
     {
         unsigned number_of_blocks = diff_blocks.size();
 
@@ -151,7 +153,7 @@ template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY> class RangeTable
         filewriter.WriteFrom(diff_blocks.data(), number_of_blocks);
     }
 
-    void Read(osrm::storage::io::FileReader &filereader)
+    void Read(storage::io::FileReader &filereader)
     {
         unsigned number_of_blocks = filereader.ReadElementCount32();
         // read total length
@@ -212,9 +214,8 @@ template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY> class RangeTable
     unsigned sum_lengths;
 };
 
-template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY>
-unsigned RangeTable<BLOCK_SIZE, USE_SHARED_MEMORY>::PrefixSumAtIndex(int index,
-                                                                     const BlockT &block) const
+template <unsigned BLOCK_SIZE, storage::Ownership Ownership>
+unsigned RangeTable<BLOCK_SIZE, Ownership>::PrefixSumAtIndex(int index, const BlockT &block) const
 {
     // this loop looks inefficent, but a modern compiler
     // will emit nice SIMD here, at least for sensible block sizes. (I checked.)
@@ -227,8 +228,8 @@ unsigned RangeTable<BLOCK_SIZE, USE_SHARED_MEMORY>::PrefixSumAtIndex(int index,
     return sum;
 }
 
-template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY>
-std::ostream &operator<<(std::ostream &out, const RangeTable<BLOCK_SIZE, USE_SHARED_MEMORY> &table)
+template <unsigned BLOCK_SIZE, storage::Ownership Ownership>
+std::ostream &operator<<(std::ostream &out, const RangeTable<BLOCK_SIZE, Ownership> &table)
 {
     // write number of block
     const unsigned number_of_blocks = table.diff_blocks.size();
@@ -243,8 +244,8 @@ std::ostream &operator<<(std::ostream &out, const RangeTable<BLOCK_SIZE, USE_SHA
     return out;
 }
 
-template <unsigned BLOCK_SIZE, bool USE_SHARED_MEMORY>
-std::istream &operator>>(std::istream &in, RangeTable<BLOCK_SIZE, USE_SHARED_MEMORY> &table)
+template <unsigned BLOCK_SIZE, storage::Ownership Ownership>
+std::istream &operator>>(std::istream &in, RangeTable<BLOCK_SIZE, Ownership> &table)
 {
     // read number of block
     unsigned number_of_blocks;

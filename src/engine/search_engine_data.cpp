@@ -7,18 +7,17 @@ namespace osrm
 namespace engine
 {
 
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::forward_heap_1;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::reverse_heap_1;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::forward_heap_2;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::reverse_heap_2;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::forward_heap_3;
-SearchEngineData::SearchEngineHeapPtr SearchEngineData::reverse_heap_3;
-SearchEngineData::ManyToManyHeapPtr SearchEngineData::many_to_many_heap;
+// CH heaps
+using CH = routing_algorithms::ch::Algorithm;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::forward_heap_1;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::reverse_heap_1;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::forward_heap_2;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::reverse_heap_2;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::forward_heap_3;
+SearchEngineData<CH>::SearchEngineHeapPtr SearchEngineData<CH>::reverse_heap_3;
+SearchEngineData<CH>::ManyToManyHeapPtr SearchEngineData<CH>::many_to_many_heap;
 
-SearchEngineData::MultiLayerDijkstraHeapPtr SearchEngineData::mld_forward_heap;
-SearchEngineData::MultiLayerDijkstraHeapPtr SearchEngineData::mld_reverse_heap;
-
-void SearchEngineData::InitializeOrClearFirstThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearFirstThreadLocalStorage(unsigned number_of_nodes)
 {
     if (forward_heap_1.get())
     {
@@ -39,7 +38,7 @@ void SearchEngineData::InitializeOrClearFirstThreadLocalStorage(const unsigned n
     }
 }
 
-void SearchEngineData::InitializeOrClearSecondThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearSecondThreadLocalStorage(unsigned number_of_nodes)
 {
     if (forward_heap_2.get())
     {
@@ -60,7 +59,7 @@ void SearchEngineData::InitializeOrClearSecondThreadLocalStorage(const unsigned 
     }
 }
 
-void SearchEngineData::InitializeOrClearThirdThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearThirdThreadLocalStorage(unsigned number_of_nodes)
 {
     if (forward_heap_3.get())
     {
@@ -81,7 +80,7 @@ void SearchEngineData::InitializeOrClearThirdThreadLocalStorage(const unsigned n
     }
 }
 
-void SearchEngineData::InitializeOrClearManyToManyThreadLocalStorage(const unsigned number_of_nodes)
+void SearchEngineData<CH>::InitializeOrClearManyToManyThreadLocalStorage(unsigned number_of_nodes)
 {
     if (many_to_many_heap.get())
     {
@@ -93,25 +92,29 @@ void SearchEngineData::InitializeOrClearManyToManyThreadLocalStorage(const unsig
     }
 }
 
-void SearchEngineData::InitializeOrClearMultiLayerDijkstraThreadLocalStorage(
-    const unsigned number_of_nodes)
+// MLD
+using MLD = routing_algorithms::mld::Algorithm;
+SearchEngineData<MLD>::SearchEngineHeapPtr SearchEngineData<MLD>::forward_heap_1;
+SearchEngineData<MLD>::SearchEngineHeapPtr SearchEngineData<MLD>::reverse_heap_1;
+
+void SearchEngineData<MLD>::InitializeOrClearFirstThreadLocalStorage(unsigned number_of_nodes)
 {
-    if (mld_forward_heap.get())
+    if (forward_heap_1.get())
     {
-        mld_forward_heap->Clear();
+        forward_heap_1->Clear();
     }
     else
     {
-        mld_forward_heap.reset(new MultiLayerDijkstraHeap(number_of_nodes));
+        forward_heap_1.reset(new QueryHeap(number_of_nodes));
     }
 
-    if (mld_reverse_heap.get())
+    if (reverse_heap_1.get())
     {
-        mld_reverse_heap->Clear();
+        reverse_heap_1->Clear();
     }
     else
     {
-        mld_reverse_heap.reset(new MultiLayerDijkstraHeap(number_of_nodes));
+        reverse_heap_1.reset(new QueryHeap(number_of_nodes));
     }
 }
 }

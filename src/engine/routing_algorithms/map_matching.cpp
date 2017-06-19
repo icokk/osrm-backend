@@ -1,5 +1,6 @@
 #include "engine/routing_algorithms/map_matching.hpp"
 #include "engine/routing_algorithms/routing_base_ch.hpp"
+#include "engine/routing_algorithms/routing_base_mld.hpp"
 
 #include "engine/map_matching/hidden_markov_model.hpp"
 #include "engine/map_matching/matching_confidence.hpp"
@@ -47,14 +48,14 @@ unsigned getMedianSampleTime(const std::vector<unsigned> &timestamps)
 }
 }
 
-template <typename AlgorithmT>
-SubMatchingList
-mapMatchingImpl(SearchEngineData &engine_working_data,
-                const datafacade::ContiguousInternalMemoryDataFacade<AlgorithmT> &facade,
-                const CandidateLists &candidates_list,
-                const std::vector<util::Coordinate> &trace_coordinates,
-                const std::vector<unsigned> &trace_timestamps,
-                const std::vector<boost::optional<double>> &trace_gps_precision)
+template <typename Algorithm>
+SubMatchingList mapMatching(SearchEngineData<Algorithm> &engine_working_data,
+                            const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                            const CandidateLists &candidates_list,
+                            const std::vector<util::Coordinate> &trace_coordinates,
+                            const std::vector<unsigned> &trace_timestamps,
+                            const std::vector<boost::optional<double>> &trace_gps_precision,
+                            const bool allow_splitting)
 {
     map_matching::MatchingConfidence confidence;
     map_matching::EmissionLogProbability default_emission_log_probability(DEFAULT_GPS_PRECISION);
@@ -140,13 +141,11 @@ mapMatchingImpl(SearchEngineData &engine_working_data,
         return sub_matchings;
     }
 
-    engine_working_data.InitializeOrClearFirstThreadLocalStorage(facade.GetNumberOfNodes());
-    engine_working_data.InitializeOrClearSecondThreadLocalStorage(facade.GetNumberOfNodes());
+    const auto nodes_number = facade.GetNumberOfNodes();
+    engine_working_data.InitializeOrClearFirstThreadLocalStorage(nodes_number);
 
-    auto &forward_heap = *(engine_working_data.forward_heap_1);
-    auto &reverse_heap = *(engine_working_data.reverse_heap_1);
-    auto &forward_core_heap = *(engine_working_data.forward_heap_2);
-    auto &reverse_core_heap = *(engine_working_data.reverse_heap_2);
+    auto &forward_heap = *engine_working_data.forward_heap_1;
+    auto &reverse_heap = *engine_working_data.reverse_heap_1;
 
     std::size_t breakage_begin = map_matching::INVALID_STATE;
     std::vector<std::size_t> split_points;
@@ -156,16 +155,24 @@ mapMatchingImpl(SearchEngineData &engine_working_data,
     for (auto t = initial_timestamp + 1; t < candidates_list.size(); ++t)
     {
 
-        const bool gap_in_trace = [&, use_timestamps]() {
-            // use temporal information if available to determine a split
-            if (use_timestamps)
+        const bool gap_in_trace = [&]() {
+            // do not determine split if wasn't asked about it
+            if (allow_splitting)
             {
-                return trace_timestamps[t] - trace_timestamps[prev_unbroken_timestamps.back()] >
-                       max_broken_time;
+                // use temporal information if available to determine a split
+                if (use_timestamps)
+                {
+                    return trace_timestamps[t] - trace_timestamps[prev_unbroken_timestamps.back()] >
+                           max_broken_time;
+                }
+                else
+                {
+                    return t - prev_unbroken_timestamps.back() > MAX_BROKEN_STATES;
+                }
             }
             else
             {
-                return t - prev_unbroken_timestamps.back() > MAX_BROKEN_STATES;
+                return false;
             }
         }();
 
@@ -188,9 +195,9 @@ mapMatchingImpl(SearchEngineData &engine_working_data,
 
             const auto haversine_distance = util::coordinate_calculation::haversineDistance(
                 prev_coordinate, current_coordinate);
-            // assumes minumum of 0.1 m/s
-            const int duration_upper_bound =
-                ((haversine_distance + max_distance_delta) * 0.25) * 10;
+            // assumes minumum of 4 m/s
+            const EdgeWeight weight_upper_bound =
+                ((haversine_distance + max_distance_delta) / 4.) * facade.GetWeightMultiplier();
 
             // compute d_t for this timestamp and the next one
             for (const auto s : util::irange<std::size_t>(0UL, prev_viterbi.size()))
@@ -210,14 +217,13 @@ mapMatchingImpl(SearchEngineData &engine_working_data,
                     }
 
                     double network_distance =
-                        ch::getNetworkDistance(facade,
-                                               forward_heap,
-                                               reverse_heap,
-                                               forward_core_heap,
-                                               reverse_core_heap,
-                                               prev_unbroken_timestamps_list[s].phantom_node,
-                                               current_timestamps_list[s_prime].phantom_node,
-                                               duration_upper_bound);
+                        getNetworkDistance(engine_working_data,
+                                           facade,
+                                           forward_heap,
+                                           reverse_heap,
+                                           prev_unbroken_timestamps_list[s].phantom_node,
+                                           current_timestamps_list[s_prime].phantom_node,
+                                           weight_upper_bound);
 
                     // get distance diff between loc1/2 and locs/s_prime
                     const auto d_t = std::abs(network_distance - haversine_distance);
@@ -410,38 +416,32 @@ mapMatchingImpl(SearchEngineData &engine_working_data,
     return sub_matchings;
 }
 
-SubMatchingList
-mapMatching(SearchEngineData &engine_working_data,
-            const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
+template SubMatchingList
+mapMatching(SearchEngineData<ch::Algorithm> &engine_working_data,
+            const datafacade::ContiguousInternalMemoryDataFacade<ch::Algorithm> &facade,
             const CandidateLists &candidates_list,
             const std::vector<util::Coordinate> &trace_coordinates,
             const std::vector<unsigned> &trace_timestamps,
-            const std::vector<boost::optional<double>> &trace_gps_precision)
-{
-    return mapMatchingImpl(engine_working_data,
-                           facade,
-                           candidates_list,
-                           trace_coordinates,
-                           trace_timestamps,
-                           trace_gps_precision);
-}
+            const std::vector<boost::optional<double>> &trace_gps_precision,
+            const bool allow_splitting);
 
-SubMatchingList
-mapMatching(SearchEngineData &engine_working_data,
-            const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CoreCH> &facade,
+template SubMatchingList
+mapMatching(SearchEngineData<corech::Algorithm> &engine_working_data,
+            const datafacade::ContiguousInternalMemoryDataFacade<corech::Algorithm> &facade,
             const CandidateLists &candidates_list,
             const std::vector<util::Coordinate> &trace_coordinates,
             const std::vector<unsigned> &trace_timestamps,
-            const std::vector<boost::optional<double>> &trace_gps_precision)
-{
+            const std::vector<boost::optional<double>> &trace_gps_precision,
+            const bool allow_splitting);
 
-    return mapMatchingImpl(engine_working_data,
-                           facade,
-                           candidates_list,
-                           trace_coordinates,
-                           trace_timestamps,
-                           trace_gps_precision);
-}
+template SubMatchingList
+mapMatching(SearchEngineData<mld::Algorithm> &engine_working_data,
+            const datafacade::ContiguousInternalMemoryDataFacade<mld::Algorithm> &facade,
+            const CandidateLists &candidates_list,
+            const std::vector<util::Coordinate> &trace_coordinates,
+            const std::vector<unsigned> &trace_timestamps,
+            const std::vector<boost::optional<double>> &trace_gps_precision,
+            const bool allow_splitting);
 
 } // namespace routing_algorithms
 } // namespace engine

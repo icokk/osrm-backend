@@ -16,6 +16,48 @@ namespace osrm
 namespace util
 {
 
+template <typename NodeID, typename Key> class GenerationArrayStorage
+{
+    using GenerationCounter = std::uint16_t;
+
+  public:
+    explicit GenerationArrayStorage(std::size_t size)
+        : positions(size, 0), generation(1), generations(size, 0)
+    {
+    }
+
+    Key &operator[](NodeID node)
+    {
+        generation[node] = generation;
+        return positions[node];
+    }
+
+    Key peek_index(const NodeID node) const
+    {
+        if (generations[node] < generation)
+        {
+            return std::numeric_limits<Key>::max();
+        }
+        return positions[node];
+    }
+
+    void Clear()
+    {
+        generation++;
+        // if generation overflows we end up at 0 again and need to clear the vector
+        if (generation == 0)
+        {
+            generation = 1;
+            std::fill(generations.begin(), generations.end(), 0);
+        }
+    }
+
+  private:
+    GenerationCounter generation;
+    std::vector<GenerationCounter> generations;
+    std::vector<Key> positions;
+};
+
 template <typename NodeID, typename Key> class ArrayStorage
 {
   public:
@@ -92,10 +134,6 @@ template <typename NodeID,
           typename IndexStorage = ArrayStorage<NodeID, NodeID>>
 class BinaryHeap
 {
-  private:
-    BinaryHeap(const BinaryHeap &right);
-    void operator=(const BinaryHeap &right);
-
   public:
     using WeightType = Weight;
     using DataType = Data;

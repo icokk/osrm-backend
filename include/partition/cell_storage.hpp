@@ -6,10 +6,11 @@
 #include "util/assert.hpp"
 #include "util/for_each_range.hpp"
 #include "util/log.hpp"
-#include "util/shared_memory_vector_wrapper.hpp"
 #include "util/typedefs.hpp"
+#include "util/vector_view.hpp"
 
-#include "storage/io.hpp"
+#include "storage/io_fwd.hpp"
+#include "storage/shared_memory_ownership.hpp"
 
 #include <boost/iterator/iterator_facade.hpp>
 #include <boost/range/iterator_range.hpp>
@@ -26,24 +27,23 @@ namespace partition
 {
 namespace detail
 {
-template <bool UseShareMemory> class CellStorageImpl;
+template <storage::Ownership Ownership> class CellStorageImpl;
 }
-using CellStorage = detail::CellStorageImpl<false>;
-using CellStorageView = detail::CellStorageImpl<true>;
+using CellStorage = detail::CellStorageImpl<storage::Ownership::Container>;
+using CellStorageView = detail::CellStorageImpl<storage::Ownership::View>;
 
-namespace io
+namespace serialization
 {
-template <bool UseShareMemory>
-inline void read(const boost::filesystem::path &path,
-                 detail::CellStorageImpl<UseShareMemory> &storage);
-template <bool UseShareMemory>
-inline void write(const boost::filesystem::path &path,
-                  const detail::CellStorageImpl<UseShareMemory> &storage);
+template <storage::Ownership Ownership>
+inline void read(storage::io::FileReader &reader, detail::CellStorageImpl<Ownership> &storage);
+template <storage::Ownership Ownership>
+inline void write(storage::io::FileWriter &writer,
+                  const detail::CellStorageImpl<Ownership> &storage);
 }
 
 namespace detail
 {
-template <bool UseShareMemory> class CellStorageImpl
+template <storage::Ownership Ownership> class CellStorageImpl
 {
   public:
     using WeightOffset = std::uint32_t;
@@ -65,7 +65,7 @@ template <bool UseShareMemory> class CellStorageImpl
     };
 
   private:
-    template <typename T> using Vector = typename util::ShM<T, UseShareMemory>::vector;
+    template <typename T> using Vector = util::ViewOrVector<T, Ownership>;
 
     // Implementation of the cell view. We need a template parameter here
     // because we need to derive a read-only and read-write view from this.
@@ -185,7 +185,8 @@ template <bool UseShareMemory> class CellStorageImpl
 
     CellStorageImpl() {}
 
-    template <typename GraphT, typename = std::enable_if<!UseShareMemory>>
+    template <typename GraphT,
+              typename = std::enable_if<Ownership == storage::Ownership::Container>>
     CellStorageImpl(const partition::MultiLevelPartition &partition, const GraphT &base_graph)
     {
         // pre-allocate storge for CellData so we can have random access to it by cell id
@@ -314,7 +315,7 @@ template <bool UseShareMemory> class CellStorageImpl
         weights.resize(weight_offset + 1, INVALID_EDGE_WEIGHT);
     }
 
-    template <typename = std::enable_if<UseShareMemory>>
+    template <typename = std::enable_if<Ownership == storage::Ownership::View>>
     CellStorageImpl(Vector<EdgeWeight> weights_,
                     Vector<NodeID> source_boundary_,
                     Vector<NodeID> destination_boundary_,
@@ -339,7 +340,8 @@ template <bool UseShareMemory> class CellStorageImpl
                          destination_boundary.empty() ? nullptr : destination_boundary.data()};
     }
 
-    template <typename = std::enable_if<!UseShareMemory>> Cell GetCell(LevelID level, CellID id)
+    template <typename = std::enable_if<Ownership == storage::Ownership::Container>>
+    Cell GetCell(LevelID level, CellID id)
     {
         const auto level_index = LevelIDToIndex(level);
         BOOST_ASSERT(level_index < level_to_cell_offset.size());
@@ -350,10 +352,10 @@ template <bool UseShareMemory> class CellStorageImpl
             cells[cell_index], weights.data(), source_boundary.data(), destination_boundary.data()};
     }
 
-    friend void io::read<UseShareMemory>(const boost::filesystem::path &path,
-                                         detail::CellStorageImpl<UseShareMemory> &storage);
-    friend void io::write<UseShareMemory>(const boost::filesystem::path &path,
-                                          const detail::CellStorageImpl<UseShareMemory> &storage);
+    friend void serialization::read<Ownership>(storage::io::FileReader &reader,
+                                               detail::CellStorageImpl<Ownership> &storage);
+    friend void serialization::write<Ownership>(storage::io::FileWriter &writer,
+                                                const detail::CellStorageImpl<Ownership> &storage);
 
   private:
     Vector<EdgeWeight> weights;

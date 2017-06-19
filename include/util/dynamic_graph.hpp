@@ -5,6 +5,8 @@
 #include "util/integer_range.hpp"
 #include "util/typedefs.hpp"
 
+#include "storage/io_fwd.hpp"
+
 #include <boost/assert.hpp>
 
 #include <cstdint>
@@ -19,6 +21,16 @@ namespace osrm
 {
 namespace util
 {
+template <typename EdgeDataT> class DynamicGraph;
+
+namespace serialization
+{
+template <typename EdgeDataT, bool UseSharedMemory>
+void read(storage::io::FileReader &reader, DynamicGraph<EdgeDataT> &graph);
+
+template <typename EdgeDataT, bool UseSharedMemory>
+void write(storage::io::FileWriter &writer, const DynamicGraph<EdgeDataT> &graph);
+}
 
 template <typename EdgeDataT> class DynamicGraph
 {

@@ -4,8 +4,11 @@
 #include "util/graph_traits.hpp"
 #include "util/integer_range.hpp"
 #include "util/percent.hpp"
-#include "util/shared_memory_vector_wrapper.hpp"
 #include "util/typedefs.hpp"
+#include "util/vector_view.hpp"
+
+#include "storage/io_fwd.hpp"
+#include "storage/shared_memory_ownership.hpp"
 
 #include <boost/assert.hpp>
 
@@ -19,6 +22,16 @@ namespace osrm
 {
 namespace util
 {
+template <typename EdgeDataT, storage::Ownership Ownership> class StaticGraph;
+
+namespace serialization
+{
+template <typename EdgeDataT, storage::Ownership Ownership>
+void read(storage::io::FileReader &reader, StaticGraph<EdgeDataT, Ownership> &graph);
+
+template <typename EdgeDataT, storage::Ownership Ownership>
+void write(storage::io::FileWriter &writer, const StaticGraph<EdgeDataT, Ownership> &graph);
+}
 
 namespace static_graph_details
 {
@@ -84,10 +97,24 @@ template <typename EdgeDataT> struct SortableEdgeWithData : SortableEdgeWithData
     }
 };
 
+template <typename EntryT, typename OtherEdge>
+EntryT edgeToEntry(const OtherEdge &from, std::true_type)
+{
+    return EntryT{from.target, from.data};
+}
+template <typename EntryT, typename OtherEdge>
+EntryT edgeToEntry(const OtherEdge &from, std::false_type)
+{
+    return EntryT{from.target};
+}
+
 } // namespace static_graph_details
 
-template <typename EdgeDataT, bool UseSharedMemory = false> class StaticGraph
+template <typename EdgeDataT, storage::Ownership Ownership = storage::Ownership::Container>
+class StaticGraph
 {
+    template <typename T> using Vector = util::ViewOrVector<T, Ownership>;
+
   public:
     using InputEdge = static_graph_details::SortableEdgeWithData<EdgeDataT>;
     using NodeIterator = static_graph_details::NodeIterator;
@@ -101,53 +128,24 @@ template <typename EdgeDataT, bool UseSharedMemory = false> class StaticGraph
         return irange(BeginEdges(node), EndEdges(node));
     }
 
-    template <typename ContainerT> StaticGraph(const int nodes, const ContainerT &graph)
-    {
-        BOOST_ASSERT(std::is_sorted(const_cast<ContainerT &>(graph).begin(),
-                                    const_cast<ContainerT &>(graph).end()));
+    StaticGraph() {}
 
-        number_of_nodes = nodes;
-        number_of_edges = static_cast<EdgeIterator>(graph.size());
-        node_array.resize(number_of_nodes + 1);
-        EdgeIterator edge = 0;
-        EdgeIterator position = 0;
-        for (const auto node : irange(0u, number_of_nodes + 1))
-        {
-            EdgeIterator last_edge = edge;
-            while (edge < number_of_edges && graph[edge].source == node)
-            {
-                ++edge;
-            }
-            node_array[node].first_edge = position; //=edge
-            position += edge - last_edge;           // remove
-        }
-        edge_array.resize(position); //(edge)
-        edge = 0;
-        for (const auto node : irange(0u, number_of_nodes))
-        {
-            EdgeIterator e = node_array[node + 1].first_edge;
-            for (const auto i : irange(node_array[node].first_edge, e))
-            {
-                edge_array[i].target = graph[edge].target;
-                CopyDataIfAvailable(
-                    edge_array[i], graph[edge], traits::HasDataMember<EdgeArrayEntry>{});
-                edge++;
-            }
-        }
+    template <typename ContainerT> StaticGraph(const std::uint32_t nodes, const ContainerT &edges)
+    {
+        BOOST_ASSERT(std::is_sorted(const_cast<ContainerT &>(edges).begin(),
+                                    const_cast<ContainerT &>(edges).end()));
+
+        InitializeFromSortedEdgeRange(nodes, edges.begin(), edges.end());
     }
 
-    StaticGraph(typename ShM<NodeArrayEntry, UseSharedMemory>::vector &nodes,
-                typename ShM<EdgeArrayEntry, UseSharedMemory>::vector &edges)
+    StaticGraph(Vector<NodeArrayEntry> node_array_, Vector<EdgeArrayEntry> edge_array_)
+        : node_array(std::move(node_array_)), edge_array(std::move(edge_array_))
     {
-        BOOST_ASSERT(!nodes.empty());
+        BOOST_ASSERT(!node_array.empty());
 
-        number_of_nodes = static_cast<decltype(number_of_nodes)>(nodes.size() - 1);
-        number_of_edges = static_cast<decltype(number_of_edges)>(nodes.back().first_edge);
-        BOOST_ASSERT(number_of_edges <= edges.size());
-
-        using std::swap;
-        swap(node_array, nodes);
-        swap(edge_array, edges);
+        number_of_nodes = static_cast<decltype(number_of_nodes)>(node_array.size() - 1);
+        number_of_edges = static_cast<decltype(number_of_edges)>(node_array.back().first_edge);
+        BOOST_ASSERT(number_of_edges <= edge_array.size());
     }
 
     unsigned GetNumberOfNodes() const { return number_of_nodes; }
@@ -243,29 +241,46 @@ template <typename EdgeDataT, bool UseSharedMemory = false> class StaticGraph
         return current_iterator;
     }
 
-    const NodeArrayEntry &GetNode(const NodeID nid) const { return node_array[nid]; }
-    const EdgeArrayEntry &GetEdge(const EdgeID eid) const { return edge_array[eid]; }
+    friend void serialization::read<EdgeDataT, Ownership>(storage::io::FileReader &reader,
+                                                          StaticGraph<EdgeDataT, Ownership> &graph);
+    friend void
+    serialization::write<EdgeDataT, Ownership>(storage::io::FileWriter &writer,
+                                               const StaticGraph<EdgeDataT, Ownership> &graph);
 
   protected:
-    template <typename OtherEdge>
-    void CopyDataIfAvailable(EdgeArrayEntry &into, const OtherEdge &from, std::true_type)
+    template <typename IterT>
+    void InitializeFromSortedEdgeRange(const std::uint32_t nodes, IterT begin, IterT end)
     {
-        into.data = from.data;
+        number_of_nodes = nodes;
+        number_of_edges = static_cast<EdgeIterator>(std::distance(begin, end));
+        node_array.reserve(number_of_nodes + 1);
+        node_array.push_back(NodeArrayEntry{0u});
+        auto iter = begin;
+        for (auto node : util::irange(0u, nodes))
+        {
+            iter =
+                std::find_if(iter, end, [node](const auto &edge) { return edge.source != node; });
+            unsigned offset = std::distance(begin, iter);
+            node_array.push_back(NodeArrayEntry{offset});
+        }
+        BOOST_ASSERT_MSG(
+            iter == end,
+            ("Still " + std::to_string(std::distance(iter, end)) + " edges left.").c_str());
+        BOOST_ASSERT(node_array.size() == number_of_nodes + 1);
+
+        edge_array.resize(number_of_edges);
+        std::transform(begin, end, edge_array.begin(), [](const auto &from) {
+            return static_graph_details::edgeToEntry<EdgeArrayEntry>(
+                from, traits::HasDataMember<EdgeArrayEntry>{});
+        });
     }
 
-    template <typename OtherEdge>
-    void CopyDataIfAvailable(EdgeArrayEntry &into, const OtherEdge &from, std::false_type)
-    {
-        // Graph has no .data member, never copy even if `from` has a .data member.
-        (void)into;
-        (void)from;
-    }
-
+    // private:
     NodeIterator number_of_nodes;
     EdgeIterator number_of_edges;
 
-    typename ShM<NodeArrayEntry, UseSharedMemory>::vector node_array;
-    typename ShM<EdgeArrayEntry, UseSharedMemory>::vector edge_array;
+    Vector<NodeArrayEntry> node_array;
+    Vector<EdgeArrayEntry> edge_array;
 };
 
 } // namespace util

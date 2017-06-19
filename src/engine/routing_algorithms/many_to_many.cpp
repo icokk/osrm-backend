@@ -15,7 +15,10 @@ namespace engine
 namespace routing_algorithms
 {
 
-using ManyToManyQueryHeap = SearchEngineData::ManyToManyQueryHeap;
+namespace ch
+{
+
+using ManyToManyQueryHeap = SearchEngineData<Algorithm>::ManyToManyQueryHeap;
 
 namespace
 {
@@ -34,7 +37,7 @@ struct NodeBucket
 using SearchSpaceWithBuckets = std::unordered_map<NodeID, std::vector<NodeBucket>>;
 
 template <bool DIRECTION>
-void relaxOutgoingEdges(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
+void relaxOutgoingEdges(const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
                         const NodeID node,
                         const EdgeWeight weight,
                         const RoutingPayload &payload,
@@ -69,7 +72,7 @@ void relaxOutgoingEdges(const datafacade::ContiguousInternalMemoryDataFacade<alg
     }
 }
 
-void forwardRoutingStep(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
+void forwardRoutingStep(const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
                         const unsigned row_idx,
                         const unsigned number_of_targets,
                         ManyToManyQueryHeap &query_heap,
@@ -128,8 +131,7 @@ void forwardRoutingStep(const datafacade::ContiguousInternalMemoryDataFacade<alg
     relaxOutgoingEdges<FORWARD_DIRECTION>(facade, node, source_weight, source_payload, query_heap);
 }
 
-void backwardRoutingStep(
-    const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
+void backwardRoutingStep(const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
     const unsigned column_idx,
     ManyToManyQueryHeap &query_heap,
     SearchSpaceWithBuckets &search_space_with_buckets)
@@ -151,8 +153,8 @@ void backwardRoutingStep(
 }
 
 std::vector<RoutingPayload>
-manyToManySearch(SearchEngineData &engine_working_data,
-                 const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
+manyToManySearch(SearchEngineData<Algorithm> &engine_working_data,
+                 const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
                  const std::vector<PhantomNode> &phantom_nodes,
                  const std::vector<std::size_t> &source_indices,
                  const std::vector<std::size_t> &target_indices)
@@ -176,7 +178,7 @@ manyToManySearch(SearchEngineData &engine_working_data,
     const auto search_target_phantom = [&](const PhantomNode &phantom) {
         // clear heap and insert target nodes
         query_heap.Clear();
-        insertNodesInHeap<REVERSE_DIRECTION>(query_heap, phantom);
+        insertTargetInHeap(query_heap, phantom);
 
         // explore search space
         while (!query_heap.Empty())
@@ -191,7 +193,7 @@ manyToManySearch(SearchEngineData &engine_working_data,
     const auto search_source_phantom = [&](const PhantomNode &phantom) {
         // clear heap and insert source nodes
         query_heap.Clear();
-        insertNodesInHeap<FORWARD_DIRECTION>(query_heap, phantom);
+        insertSourceInHeap(query_heap, phantom);
 
         // explore search space
         while (!query_heap.Empty())
@@ -242,6 +244,7 @@ manyToManySearch(SearchEngineData &engine_working_data,
     return payload_table;
 }
 
+} // namespace ch
 } // namespace routing_algorithms
 } // namespace engine
 } // namespace osrm

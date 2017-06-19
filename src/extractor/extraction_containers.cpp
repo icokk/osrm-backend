@@ -7,7 +7,6 @@
 #include "util/exception.hpp"
 #include "util/exception_utils.hpp"
 #include "util/fingerprint.hpp"
-#include "util/io.hpp"
 #include "util/log.hpp"
 #include "util/name_table.hpp"
 #include "util/timing_util.hpp"
@@ -174,7 +173,7 @@ void ExtractionContainers::WriteCharData(const std::string &file_name)
     util::UnbufferedLog log;
     log << "writing street name index ... ";
     TIMER_START(write_index);
-    boost::filesystem::ofstream file(file_name, std::ios::binary);
+    storage::io::FileWriter file(file_name, storage::io::FileWriter::HasNoFingerprint);
 
     const util::NameTable::IndexedData indexed_data;
     indexed_data.write(file, name_offsets.begin(), name_offsets.end(), name_char_data.begin());
@@ -388,16 +387,20 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
             BOOST_ASSERT(edge_iterator->source_coordinate.lon !=
                          util::FixedLongitude{std::numeric_limits<std::int32_t>::min()});
 
-            const util::Coordinate target_coord{node_iterator->lon, node_iterator->lat};
-            const double distance = util::coordinate_calculation::greatCircleDistance(
-                edge_iterator->source_coordinate, target_coord);
+            util::Coordinate source_coord(edge_iterator->source_coordinate);
+            util::Coordinate target_coord{node_iterator->lon, node_iterator->lat};
 
-            auto weight = edge_iterator->weight_data(distance);
-            auto duration = edge_iterator->duration_data(distance);
+            // flip source and target coordinates if segment is in backward direction only
+            if (!edge_iterator->result.forward && edge_iterator->result.backward)
+                std::swap(source_coord, target_coord);
 
-            ExtractionSegment extracted_segment(
-                edge_iterator->source_coordinate, target_coord, distance, weight, duration);
-            scripting_environment.ProcessSegment(extracted_segment);
+            const auto distance =
+                util::coordinate_calculation::greatCircleDistance(source_coord, target_coord);
+            const auto weight = edge_iterator->weight_data(distance);
+            const auto duration = edge_iterator->duration_data(distance);
+
+            ExtractionSegment segment(source_coord, target_coord, distance, weight, duration);
+            scripting_environment.ProcessSegment(segment);
 
             auto &edge = edge_iterator->result;
             edge.weight =

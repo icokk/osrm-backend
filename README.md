@@ -37,22 +37,38 @@ Related [Project-OSRM](https://github.com/Project-OSRM) repositories:
 
 ## Quick Start
 
-The easiest and quickest way to setup your own routing engine backend is to use Docker images we provide.
+The easiest and quickest way to setup your own routing engine is to use Docker images we provide.
 
 ### Using Docker
 
-We base the Docker images on Alpine Linux and make sure they are as lightweight as possible (around 10-15 MB).
-In the following, replace `X.Y.Z` with the current stable release version.
+We base our Docker images ([backend](https://hub.docker.com/r/osrm/osrm-backend/), [frontend](https://hub.docker.com/r/osrm/osrm-frontend/)) on Alpine Linux and make sure they are as lightweight as possible.
 
-```
-wget http://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf
+Download OpenStreetMap extracts for example from [Geofabrik](http://download.geofabrik.de/)
 
-docker run -t -v $(pwd):/data osrm/osrm-backend:vX.Y.Z osrm-extract -p /opt/car.lua /data/berlin-latest.osm.pbf
-docker run -t -v $(pwd):/data osrm/osrm-backend:vX.Y.Z osrm-contract /data/berlin-latest.osrm
-docker run -t -i -p 5000:5000 -v $(pwd):/data osrm/osrm-backend:vX.Y.Z osrm-routed /data/berlin-latest.osrm
+    wget http://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf
 
-curl http://127.0.0.1:5000/route/v1/driving/13.388860,52.517037;13.385983,52.496891?steps=true
-```
+Pre-process the extract with the car profile and start a routing engine HTTP server on port 5000
+
+    docker run -t -v $(pwd):/data osrm/osrm-backend osrm-extract -p /opt/car.lua /data/berlin-latest.osm.pbf
+    docker run -t -v $(pwd):/data osrm/osrm-backend osrm-contract /data/berlin-latest.osrm
+
+    docker run -t -i -p 5000:5000 -v $(pwd):/data osrm/osrm-backend osrm-routed /data/berlin-latest.osrm
+
+Make requests against the HTTP server
+
+    curl "http://127.0.0.1:5000/route/v1/driving/13.388860,52.517037;13.385983,52.496891?steps=true"
+
+Optionally start a user-friendly frontend on port 9966, and open it up in your browser
+
+    docker run -p 9966:9966 osrm/osrm-frontend
+    xdg-open 'http://127.0.0.1:9966'
+
+In case Docker complains about not being able to connect to the Docker daemon make sure you are in the `docker` group.
+
+    sudo usermod -aG docker $USER
+
+After adding yourself to the `docker` group make sure to log out and back in again with your terminal.
+
 
 ### Building from Source
 

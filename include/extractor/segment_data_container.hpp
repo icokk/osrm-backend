@@ -1,8 +1,11 @@
 #ifndef OSRM_EXTRACTOR_SEGMENT_DATA_CONTAINER_HPP_
 #define OSRM_EXTRACTOR_SEGMENT_DATA_CONTAINER_HPP_
 
-#include "util/shared_memory_vector_wrapper.hpp"
 #include "util/typedefs.hpp"
+#include "util/vector_view.hpp"
+
+#include "storage/io_fwd.hpp"
+#include "storage/shared_memory_ownership.hpp"
 
 #include <boost/filesystem/path.hpp>
 #include <boost/range/adaptor/reversed.hpp>
@@ -22,24 +25,24 @@ class CompressedEdgeContainer;
 
 namespace detail
 {
-template <bool UseShareMemory> class SegmentDataContainerImpl;
+template <storage::Ownership Ownership> class SegmentDataContainerImpl;
 }
 
-namespace io
+namespace serialization
 {
-template <bool UseShareMemory>
-inline void read(const boost::filesystem::path &path,
-                 detail::SegmentDataContainerImpl<UseShareMemory> &segment_data);
-template <bool UseShareMemory>
-inline void write(const boost::filesystem::path &path,
-                  const detail::SegmentDataContainerImpl<UseShareMemory> &segment_data);
+template <storage::Ownership Ownership>
+inline void read(storage::io::FileReader &reader,
+                 detail::SegmentDataContainerImpl<Ownership> &segment_data);
+template <storage::Ownership Ownership>
+inline void write(storage::io::FileWriter &writer,
+                  const detail::SegmentDataContainerImpl<Ownership> &segment_data);
 }
 
 namespace detail
 {
-template <bool UseShareMemory> class SegmentDataContainerImpl
+template <storage::Ownership Ownership> class SegmentDataContainerImpl
 {
-    template <typename T> using Vector = typename util::ShM<T, UseShareMemory>::vector;
+    template <typename T> using Vector = util::ViewOrVector<T, Ownership>;
 
     friend CompressedEdgeContainer;
 
@@ -189,11 +192,11 @@ template <bool UseShareMemory> class SegmentDataContainerImpl
     auto GetNumberOfSegments() const { return fwd_weights.size(); }
 
     friend void
-    io::read<UseShareMemory>(const boost::filesystem::path &path,
-                             detail::SegmentDataContainerImpl<UseShareMemory> &segment_data);
-    friend void
-    io::write<UseShareMemory>(const boost::filesystem::path &path,
-                              const detail::SegmentDataContainerImpl<UseShareMemory> &segment_data);
+    serialization::read<Ownership>(storage::io::FileReader &reader,
+                                   detail::SegmentDataContainerImpl<Ownership> &segment_data);
+    friend void serialization::write<Ownership>(
+        storage::io::FileWriter &writer,
+        const detail::SegmentDataContainerImpl<Ownership> &segment_data);
 
   private:
     Vector<std::uint32_t> index;
@@ -206,8 +209,8 @@ template <bool UseShareMemory> class SegmentDataContainerImpl
 };
 }
 
-using SegmentDataView = detail::SegmentDataContainerImpl<true>;
-using SegmentDataContainer = detail::SegmentDataContainerImpl<false>;
+using SegmentDataView = detail::SegmentDataContainerImpl<storage::Ownership::View>;
+using SegmentDataContainer = detail::SegmentDataContainerImpl<storage::Ownership::Container>;
 }
 }
 

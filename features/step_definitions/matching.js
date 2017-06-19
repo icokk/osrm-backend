@@ -16,9 +16,12 @@ module.exports = function () {
 
                     var headers = new Set(table.raw()[0]);
 
+                    got.code = 'unknown';
                     if (res.body.length) {
                         json = JSON.parse(res.body);
+                        got.code = json.code;
                     }
+
 
                     if (headers.has('status')) {
                         got.status = json.status.toString();
@@ -33,7 +36,7 @@ module.exports = function () {
                         got['#'] = row['#'];
                     }
 
-                    var subMatchings = [],
+                    var subMatchings = [''],
                         turns = '',
                         route = '',
                         duration = '',
@@ -175,8 +178,7 @@ module.exports = function () {
 
                     if (headers.has('matchings')) {
                         if (subMatchings.length != row.matchings.split(',').length) {
-                            ok = false;
-                            cb(new Error('*** table matchings and api response are not the same'));
+                            return cb(new Error('*** table matchings and api response are not the same'));
                         }
 
                         row.matchings.split(',').forEach((sub, si) => {

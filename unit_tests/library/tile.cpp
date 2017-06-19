@@ -24,7 +24,7 @@ BOOST_AUTO_TEST_CASE(test_tile)
 {
     using namespace osrm;
 
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     // This tile should contain most of monaco
     TileParameters params{17059, 11948, 15};
@@ -215,7 +215,7 @@ BOOST_AUTO_TEST_CASE(test_tile_turns)
 {
     using namespace osrm;
 
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
     // Small tile where we can test all the values
     TileParameters params{272953, 191177, 19};
 
@@ -363,7 +363,7 @@ BOOST_AUTO_TEST_CASE(test_tile_speeds)
 {
     using namespace osrm;
 
-    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/monaco_CH.osrm");
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/ch/monaco.osrm");
 
     // Small tile so we can test all the values
     // TileParameters params{272953, 191177, 19};

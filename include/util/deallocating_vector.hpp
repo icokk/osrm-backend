@@ -239,6 +239,13 @@ class DeallocatingVector
         bucket_list.emplace_back(new ElementT[ELEMENTS_PER_BLOCK]);
     }
 
+    // copying is not safe since this would only do a shallow copy
+    DeallocatingVector(DeallocatingVector &other) = delete;
+    DeallocatingVector &operator=(DeallocatingVector &other) = delete;
+    // moving is fine
+    DeallocatingVector(DeallocatingVector &&other) = default;
+    DeallocatingVector &operator=(DeallocatingVector &&other) = default;
+
     ~DeallocatingVector() { clear(); }
 
     friend void swap<>(DeallocatingVector<ElementT, ELEMENTS_PER_BLOCK> &lhs,

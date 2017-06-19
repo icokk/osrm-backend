@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "customizer/cell_customizer.hpp"
+#include "partition/multi_level_graph.hpp"
 #include "partition/multi_level_partition.hpp"
 #include "util/static_graph.hpp"
 
@@ -19,7 +20,7 @@ struct MockEdge
     EdgeWeight weight;
 };
 
-auto makeGraph(const std::vector<MockEdge> &mock_edges)
+auto makeGraph(const MultiLevelPartition &mlp, const std::vector<MockEdge> &mock_edges)
 {
     struct EdgeData
     {
@@ -37,7 +38,8 @@ auto makeGraph(const std::vector<MockEdge> &mock_edges)
         edges.push_back(Edge{m.target, m.start, m.weight, false, true});
     }
     std::sort(edges.begin(), edges.end());
-    return util::StaticGraph<EdgeData>(max_id + 1, edges);
+    return partition::MultiLevelGraph<EdgeData, osrm::storage::Ownership::Container>(
+        mlp, max_id + 1, edges);
 }
 }
 
@@ -53,10 +55,11 @@ BOOST_AUTO_TEST_CASE(two_level_test)
 
     std::vector<MockEdge> edges = {{0, 1, 1}, {0, 2, 1}, {2, 3, 1}, {3, 1, 1}, {3, 2, 1}};
 
-    auto graph = makeGraph(edges);
+    auto graph = makeGraph(mlp, edges);
 
     CellStorage storage(mlp, graph);
     CellCustomizer customizer(mlp);
+    CellCustomizer::Heap heap(graph.GetNumberOfNodes());
 
     auto cell_1_0 = storage.GetCell(1, 0);
     auto cell_1_1 = storage.GetCell(1, 1);
@@ -78,8 +81,8 @@ BOOST_AUTO_TEST_CASE(two_level_test)
     REQUIRE_SIZE_RANGE(cell_1_1.GetOutWeight(2), 2);
     REQUIRE_SIZE_RANGE(cell_1_1.GetInWeight(3), 2);
 
-    customizer.Customize(graph, storage, 1, 0);
-    customizer.Customize(graph, storage, 1, 1);
+    customizer.Customize(graph, heap, storage, 1, 0);
+    customizer.Customize(graph, heap, storage, 1, 1);
 
     // cell 0
     // check row source -> destination
@@ -130,7 +133,7 @@ BOOST_AUTO_TEST_CASE(four_levels_test)
         {14, 11, 1} // edge between cells (2, 1, 0) -> (0, 0, 0)
     };
 
-    auto graph = makeGraph(edges);
+    auto graph = makeGraph(mlp, edges);
 
     CellStorage storage(mlp, graph);
 
@@ -201,14 +204,15 @@ BOOST_AUTO_TEST_CASE(four_levels_test)
     REQUIRE_SIZE_RANGE(cell_3_0.GetDestinationNodes(), 0);
 
     CellCustomizer customizer(mlp);
+    CellCustomizer::Heap heap(graph.GetNumberOfNodes());
 
-    customizer.Customize(graph, storage, 1, 0);
-    customizer.Customize(graph, storage, 1, 1);
-    customizer.Customize(graph, storage, 1, 2);
-    customizer.Customize(graph, storage, 1, 3);
+    customizer.Customize(graph, heap, storage, 1, 0);
+    customizer.Customize(graph, heap, storage, 1, 1);
+    customizer.Customize(graph, heap, storage, 1, 2);
+    customizer.Customize(graph, heap, storage, 1, 3);
 
-    customizer.Customize(graph, storage, 2, 0);
-    customizer.Customize(graph, storage, 2, 1);
+    customizer.Customize(graph, heap, storage, 2, 0);
+    customizer.Customize(graph, heap, storage, 2, 1);
 
     // level 1
     // cell 0

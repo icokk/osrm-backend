@@ -22,23 +22,17 @@ static const constexpr double DEFAULT_GPS_PRECISION = 5;
 
 //[1] "Hidden Markov Map Matching Through Noise and Sparseness";
 //     P. Newson and J. Krumm; 2009; ACM GIS
-SubMatchingList
-mapMatching(SearchEngineData &engine_working_data,
-            const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
-            const CandidateLists &candidates_list,
-            const std::vector<util::Coordinate> &trace_coordinates,
-            const std::vector<unsigned> &trace_timestamps,
-            const std::vector<boost::optional<double>> &trace_gps_precision);
+template <typename Algorithm>
+SubMatchingList mapMatching(SearchEngineData<Algorithm> &engine_working_data,
+                            const datafacade::ContiguousInternalMemoryDataFacade<Algorithm> &facade,
+                            const CandidateLists &candidates_list,
+                            const std::vector<util::Coordinate> &trace_coordinates,
+                            const std::vector<unsigned> &trace_timestamps,
+                            const std::vector<boost::optional<double>> &trace_gps_precision,
+                            const bool allow_splitting);
 
-SubMatchingList
-mapMatching(SearchEngineData &engine_working_data,
-            const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CoreCH> &facade,
-            const CandidateLists &candidates_list,
-            const std::vector<util::Coordinate> &trace_coordinates,
-            const std::vector<unsigned> &trace_timestamps,
-            const std::vector<boost::optional<double>> &trace_gps_precision);
-}
-}
-}
+} // namespace routing_algorithms
+} // namespace engine
+} // namespace osrm
 
 #endif /* MAP_MATCHING_HPP */

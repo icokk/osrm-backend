@@ -222,6 +222,43 @@ Feature: Basic Roundabout
            | j,f       | jkl,def,def | depart,roundabout-exit-2,arrive |
            | j,c       | jkl,abc,abc | depart,roundabout-exit-3,arrive |
 
+     Scenario: Mixed Entry and Exit - clockwise order
+        Given the node map
+           """
+             c   a
+           j   b   f
+             k   e
+           l   h   d
+             g   i
+           """
+
+        And the ways
+           | nodes | junction   | oneway |
+           | abc   |            | yes    |
+           | def   |            | yes    |
+           | ghi   |            | yes    |
+           | jkl   |            | yes    |
+           | behkb | roundabout | yes    |
+
+        When I route I should get
+           | waypoints | route       | turns                           |
+           | a,c       | abc,abc,abc | depart,roundabout-exit-4,arrive |
+           | a,l       | abc,jkl,jkl | depart,roundabout-exit-3,arrive |
+           | a,i       | abc,ghi,ghi | depart,roundabout-exit-2,arrive |
+           | a,f       | abc,def,def | depart,roundabout-exit-1,arrive |
+           | d,f       | def,def,def | depart,roundabout-exit-4,arrive |
+           | d,c       | def,abc,abc | depart,roundabout-exit-3,arrive |
+           | d,l       | def,jkl,jkl | depart,roundabout-exit-2,arrive |
+           | d,i       | def,ghi,ghi | depart,roundabout-exit-1,arrive |
+           | g,i       | ghi,ghi,ghi | depart,roundabout-exit-4,arrive |
+           | g,f       | ghi,def,def | depart,roundabout-exit-3,arrive |
+           | g,c       | ghi,abc,abc | depart,roundabout-exit-2,arrive |
+           | g,l       | ghi,jkl,jkl | depart,roundabout-exit-1,arrive |
+           | j,l       | jkl,jkl,jkl | depart,roundabout-exit-4,arrive |
+           | j,i       | jkl,ghi,ghi | depart,roundabout-exit-3,arrive |
+           | j,f       | jkl,def,def | depart,roundabout-exit-2,arrive |
+           | j,c       | jkl,abc,abc | depart,roundabout-exit-1,arrive |
+
     Scenario: Mixed Entry and Exit - segregated roads, different names
         Given the node map
            """
@@ -681,3 +718,105 @@ Feature: Basic Roundabout
            | u,r       | ug,ar,ar | depart,roundabout-exit-3,arrive |
            | u,s       | ug,ds,ds | depart,roundabout-exit-4,arrive |
            | u,t       | ug,ft,ft | depart,roundabout-exit-5,arrive |
+
+
+    @3762
+    Scenario: Only Enter
+        Given the node map
+            """
+                  a
+                  b
+           i   c     e ~ ~ ~ f - h
+                j d
+              k   g
+            """
+
+        And the ways
+            | nodes  | junction   | route |
+            | ab     |            |       |
+            | ef     |            | ferry |
+            | fh     |            |       |
+            | dg     |            |       |
+            | ic     |            |       |
+            | jk     |            |       |
+            | bcjdeb | roundabout |       |
+
+        When I route I should get
+            | waypoints | route          | turns                                                                           |
+            | a,h       | ab,ef,ef,fh,fh | depart,roundabout-exit-4,notification slight right,notification straight,arrive |
+
+
+     Scenario: Drive through roundabout
+        Given the node map
+           """
+              a
+            b e d  f
+              c
+            g   h
+           """
+
+        And the ways
+           | nodes | junction   | oneway |
+           | abcda | roundabout | yes    |
+           | edf   |            |        |
+           | gch   |            | yes    |
+
+        When I route I should get
+           | waypoints | bearings | route       | turns                           |
+           | e,f       | 90 90    | edf,edf,edf | depart,roundabout-exit-1,arrive |
+           | e,h       | 90 135   | edf,gch,gch | depart,roundabout-exit-2,arrive |
+           | g,f       | 45 90    | gch,edf,edf | depart,roundabout-exit-2,arrive |
+           | g,h       | 45 135   | gch,gch,gch | depart,roundabout-exit-1,arrive |
+           | e,e       | 90 270   | edf,edf,edf | depart,roundabout-exit-3,arrive |
+
+    @4030 @4075
+    Scenario: Service roundabout with service exits
+      # Counting of service exits must be adjusted in #4075
+        Given the node map
+            """
+                e
+            f a d
+            g b1c
+              h
+            """
+
+        And the ways
+            | nodes | highway  | junction   |
+            | abcda | service  | roundabout |
+            | de    | service  |            |
+            | af    | service  |            |
+            | bg    | tertiary |            |
+            | bh    | service  |            |
+
+        When I route I should get
+            | from | to | route       | turns                           |
+            |    1 | e  | abcda,de,de | depart,roundabout-exit-1,arrive |
+            |    1 | f  | abcda,af,af | depart,roundabout-exit-1,arrive |
+            |    1 | g  | abcda,bg,bg | depart,roundabout-exit-1,arrive |
+            |    1 | h  | abcda,bh,bh | depart,roundabout-exit-1,arrive |
+
+    Scenario: CCW and CW roundabouts with overlaps
+        Given the node map
+            """
+            a   d          g   h
+
+            b   c          j   i
+            f   e          k   l
+            """
+
+        And the ways
+            | nodes | highway  | junction   |
+            | abcda | tertiary | roundabout |
+            | ed    | tertiary |            |
+            | af    | tertiary |            |
+            | ghijg | tertiary | roundabout |
+            | kg    | tertiary |            |
+            | hl    | tertiary |            |
+
+        When I route I should get
+            | from | to | route    | turns                           | distance |
+            | e    | f  | ed,af,af | depart,roundabout-exit-1,arrive | 80.1m    |
+            | f    | e  | af,ed,ed | depart,roundabout-exit-1,arrive | 120.1m   |
+            | k    | l  | kg,hl,hl | depart,roundabout-exit-1,arrive | 80.1m    |
+            | l    | k  | hl,kg,kg | depart,roundabout-exit-1,arrive | 120.1m   |
+
