@@ -186,7 +186,7 @@ void routingStep(const datafacade::ContiguousInternalMemoryDataFacade<Algorithm>
 }
 
 inline EdgeWeight
-getLoopWeight(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
+getLoopWeight(const datafacade::ContiguousInternalMemoryDataFacade<routing_algorithms::ch::Algorithm> &facade,
               NodeID node)
 {
     EdgeWeight loop_weight = INVALID_EDGE_WEIGHT;
@@ -207,7 +207,7 @@ getLoopWeight(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH
 }
 
 inline EdgePayload
-getLoopPayload(const datafacade::ContiguousInternalMemoryDataFacade<algorithm::CH> &facade,
+getLoopPayload(const datafacade::ContiguousInternalMemoryDataFacade<routing_algorithms::ch::Algorithm> &facade,
                NodeID node)
 {
     EdgeWeight loop_weight = INVALID_EDGE_WEIGHT;

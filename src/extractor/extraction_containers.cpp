@@ -404,9 +404,9 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
 
             auto &edge = edge_iterator->result;
             edge.weight =
-                std::max<EdgeWeight>(1, std::round(extracted_segment.weight * weight_multiplier));
+                std::max<EdgeWeight>(1, std::round(weight * weight_multiplier));
             edge.payload = MAKE_PAYLOAD(
-                std::max<EdgeWeight>(1, std::round(extracted_segment.duration * 10.)), distance);
+                std::max<EdgeWeight>(1, std::round(duration * 10.)), distance);
 
             // assign new node id
             auto id_iter = external_to_internal_node_id_map.find(node_iterator->node_id);

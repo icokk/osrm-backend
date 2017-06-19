@@ -177,7 +177,7 @@ std::vector<EdgeWeight> RoutingAlgorithms<AlgorithmT>::ManyToManyDurations(
     const std::vector<std::size_t> &source_indices,
     const std::vector<std::size_t> &target_indices) const
 {
-    std::vector<RoutingPayload> table = routing_algorithms::manyToManySearch(
+    std::vector<RoutingPayload> table = routing_algorithms::ch::manyToManySearch(
         heaps, facade, phantom_nodes, source_indices, target_indices);
     std::vector<EdgeWeight> durations;
     std::transform(table.begin(),
@@ -221,7 +221,7 @@ InternalRouteResult inline RoutingAlgorithms<
 }
 
 template <>
-inline std::vector<EdgeWeight>
+inline std::vector<RoutingPayload>
 RoutingAlgorithms<routing_algorithms::corech::Algorithm>::ManyToManySearch(
     const std::vector<PhantomNode> &,
     const std::vector<std::size_t> &,
@@ -232,7 +232,6 @@ RoutingAlgorithms<routing_algorithms::corech::Algorithm>::ManyToManySearch(
 
 // MLD overrides for not implemented
 template <>
-inline std::vector<RoutingPayload>
 InternalRouteResult inline RoutingAlgorithms<
     routing_algorithms::mld::Algorithm>::AlternativePathSearch(const PhantomNodes &) const
 {
@@ -240,7 +239,7 @@ InternalRouteResult inline RoutingAlgorithms<
 }
 
 template <>
-inline std::vector<EdgeWeight>
+inline std::vector<RoutingPayload>
 RoutingAlgorithms<routing_algorithms::mld::Algorithm>::ManyToManySearch(
     const std::vector<PhantomNode> &,
                                                     const std::vector<std::size_t> &,
@@ -251,7 +250,7 @@ RoutingAlgorithms<routing_algorithms::mld::Algorithm>::ManyToManySearch(
 
 template <>
 inline std::vector<EdgeWeight>
-RoutingAlgorithms<algorithm::MLD>::ManyToManyDurations(const std::vector<PhantomNode> &,
+RoutingAlgorithms<routing_algorithms::mld::Algorithm>::ManyToManyDurations(const std::vector<PhantomNode> &,
                                                        const std::vector<std::size_t> &,
                                                        const std::vector<std::size_t> &) const
 {
@@ -260,10 +259,11 @@ RoutingAlgorithms<algorithm::MLD>::ManyToManyDurations(const std::vector<Phantom
 
 template <>
 inline routing_algorithms::SubMatchingList
-RoutingAlgorithms<algorithm::MLD>::MapMatching(const routing_algorithms::CandidateLists &,
+RoutingAlgorithms<routing_algorithms::mld::Algorithm>::MapMatching(const routing_algorithms::CandidateLists &,
                                                const std::vector<util::Coordinate> &,
                                                const std::vector<unsigned> &,
-                                               const std::vector<boost::optional<double>> &) const
+                                               const std::vector<boost::optional<double>> &,
+                                               const bool) const
 {
     throw util::exception("MapMatching is not implemented");
 }
