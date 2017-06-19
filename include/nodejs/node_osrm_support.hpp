@@ -867,6 +867,41 @@ argumentsToTableParameter(const Nan::FunctionCallbackInfo<v8::Value> &args,
         }
     }
 
+    if (obj->Has(Nan::New("output_fields").ToLocalChecked()))
+    {
+        v8::Local<v8::Value> output_fields = obj->Get(Nan::New("output_fields").ToLocalChecked());
+
+        if (!output_fields->IsArray())
+        {
+            Nan::ThrowError("Output_fields must be an array of (\"DURATION\", \"DISTANCE\")");
+            return table_parameters_ptr();
+        }
+
+        v8::Local<v8::Array> output_fields_array = v8::Local<v8::Array>::Cast(output_fields);
+        for (uint32_t i = 0; i < output_fields_array->Length(); ++i)
+        {
+            v8::Local<v8::Value> field = output_fields_array->Get(i);
+            if (field->IsString())
+            {
+                std::string field_str = *v8::String::Utf8Value(field);
+                if ( field_str == "DURATION" || field_str == "duration" )
+                    params->output_fields.push_back(osrm::engine::api::DURATION);
+                else if ( field_str == "DISTANCE" || field_str == "distance" )
+                    params->output_fields.push_back(osrm::engine::api::DISTANCE);
+                else
+                {
+                    Nan::ThrowError("Output fields must be \"DURATION\" or \"DISTANCE\"");
+                    return table_parameters_ptr();
+                }
+            }
+            else
+            {
+                Nan::ThrowError("Output fields must be \"DURATION\" or \"DISTANCE\"");
+                return table_parameters_ptr();
+            }
+        }
+    }
+
     return params;
 }
 
@@ -1010,6 +1045,51 @@ argumentsToMatchParameter(const Nan::FunctionCallbackInfo<v8::Value> &args,
             }
             params->timestamps.emplace_back(static_cast<unsigned>(timestamp->NumberValue()));
         }
+    }
+
+    if (obj->Has(Nan::New("gaps").ToLocalChecked()))
+    {
+        v8::Local<v8::Value> gaps = obj->Get(Nan::New("gaps").ToLocalChecked());
+        if (gaps.IsEmpty())
+            return false;
+
+        if (!gaps->IsString())
+        {
+            Nan::ThrowError("gaps must be a string: [split, ignore]");
+            return false;
+        }
+
+        const Nan::Utf8String gaps_utf8str(gaps);
+        std::string gaps_str{*gaps_utf8str, *gaps_utf8str + gaps_utf8str.length()};
+
+        if (gaps_str == "split")
+        {
+            params->gaps = osrm::MatchParameters::GapsType::Split;
+        }
+        else if (gaps_str == "ignore")
+        {
+            params->gaps = osrm::MatchParameters::GapsType::Ignore;
+        }
+        else
+        {
+            Nan::ThrowError("'gaps' param must be one of [split, ignore]");
+            return false;
+        }
+    }
+
+    if (obj->Has(Nan::New("tidy").ToLocalChecked()))
+    {
+        v8::Local<v8::Value> tidy = obj->Get(Nan::New("tidy").ToLocalChecked());
+        if (tidy.IsEmpty())
+            return false;
+
+        if (!tidy->IsBoolean())
+        {
+            Nan::ThrowError("tidy must be of type Boolean");
+            return false;
+        }
+
+        params->tidy = tidy->BooleanValue();
     }
 
     bool parsedSuccessfully = parseCommonParameters(obj, params);
